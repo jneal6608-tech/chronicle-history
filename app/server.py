@@ -6,18 +6,15 @@ Then open: http://127.0.0.1:8765
 from __future__ import annotations
 
 import importlib.util
-import re
 import shutil
 import subprocess
-import threading
-import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import config, credits, leadfinder, media, outreach, pipeline, results, sitegen
+from . import config, credits, media, pipeline, results
 
 app = FastAPI(title="Chronicle Shorts", docs_url=None, redoc_url=None)
 
@@ -270,142 +267,6 @@ async def credits_balance(request: Request):
     except ValueError:
         raise HTTPException(400, "Enter a dollar amount, like 5 or 12.50.")
     return credits.add_credits(amount) if body.get("action") == "add" else credits.set_balance(amount)
-
-
-# ------------------------------------------------------------------ lead finder
-
-@app.get("/leads", response_class=HTMLResponse)
-def leads_page():
-    return HTMLResponse((config.STATIC_DIR / "leads.html").read_text(encoding="utf-8"),
-                        headers={"Cache-Control": "no-store"})
-
-
-def _lead_settings() -> dict:
-    return outreach.settings(leadfinder.load().get("settings"))
-
-
-@app.get("/api/leads")
-def leads_list(all: int = 0):
-    s = _lead_settings()
-    rows = leadfinder.listing(bool(all))
-    for r in rows:
-        r["email"] = outreach.email(r, s)
-        r["call_script"] = outreach.call_script(r, s)
-        r["find_email"] = outreach.search_email_url(r)
-        r["site_job"] = sitegen.JOBS.get(r["id"])
-    d = leadfinder.load()
-    return {"rows": rows, "run": leadfinder.RUN, "usage": leadfinder.usage(), "free_monthly": leadfinder.FREE_MONTHLY,
-            "settings": s, "home": d.get("home"),
-            "keys": {"google": bool(config.GOOGLE_MAPS_API_KEY), "claude": bool(config.ANTHROPIC_API_KEY),
-                     "github": bool(config.GITHUB_TOKEN and config.GITHUB_PREVIEW_REPO),
-                     "github_repo": config.GITHUB_PREVIEW_REPO},
-            "categories": [{"id": q, "label": l} for q, l, _ in leadfinder.CATEGORIES],
-            "default_categories": leadfinder.DEFAULT_CATEGORIES, "site_model": config.SITE_MODEL,
-            "total_found": sum(1 for x in d["leads"].values() if x.get("google"))}
-
-
-@app.post("/api/leads/settings")
-async def leads_settings(request: Request):
-    _same_origin(request)
-    body = await request.json()
-    with leadfinder._lock:
-        d = leadfinder.load()
-        cur = outreach.settings(d.get("settings"))
-        for k in outreach.DEFAULT_SETTINGS:
-            if k in body:
-                v = body[k]
-                if k in ("target", "max_miles", "budget"):
-                    try:
-                        v = max(1, min({"target": 500, "max_miles": 200, "budget": 20000}[k], int(float(v))))
-                    except (TypeError, ValueError):
-                        continue
-                elif k == "categories":
-                    v = [c for c in (v or []) if c in leadfinder.CAT]
-                else:
-                    v = str(v)[:4000]
-                cur[k] = v
-        d["settings"] = cur
-        leadfinder.save(d)
-    return cur
-
-
-@app.post("/api/leads/keys")
-async def leads_keys(request: Request):
-    _same_origin(request)
-    body = await request.json()
-    if "google_key" in body:
-        k = str(body["google_key"] or "").strip()
-        if k and not re.fullmatch(r"AIza[0-9A-Za-z_\-]{30,}", k):
-            raise HTTPException(400, "That doesn't look like a Google API key. They start with AIza.")
-        config.write_env("GOOGLE_MAPS_API_KEY", k or None)
-    if "github_token" in body or "github_repo" in body:
-        token = str(body.get("github_token") or config.GITHUB_TOKEN).strip()
-        repo = str(body.get("github_repo") or config.GITHUB_PREVIEW_REPO).strip().removeprefix("https://github.com/").strip("/")
-        if token or repo:
-            problem = sitegen.check_github(token, repo)
-            if problem:
-                raise HTTPException(400, problem)
-        config.write_env("GITHUB_TOKEN", token or None)
-        config.write_env("GITHUB_PREVIEW_REPO", repo or None)
-    return {"google": bool(config.GOOGLE_MAPS_API_KEY),
-            "github": bool(config.GITHUB_TOKEN and config.GITHUB_PREVIEW_REPO)}
-
-
-@app.post("/api/leads/search")
-async def leads_search(request: Request):
-    _same_origin(request)
-    if not config.GOOGLE_MAPS_API_KEY:
-        raise HTTPException(400, "Add your Google Maps key in Settings first.")
-    if leadfinder.RUN["running"]:
-        raise HTTPException(409, "A search is already running.")
-    s = _lead_settings()
-    if not s["location"].strip():
-        raise HTTPException(400, "Enter your town or ZIP code in Settings first.")
-    threading.Thread(target=leadfinder.run_search, daemon=True,
-                     args=(s["location"], config.GOOGLE_MAPS_API_KEY, s["categories"] or leadfinder.DEFAULT_CATEGORIES,
-                           int(s["target"]), float(s["max_miles"]), int(s["budget"]))).start()
-    return {"started": True}
-
-
-@app.post("/api/leads/{lead_id}")
-async def lead_update(lead_id: str, request: Request):
-    _same_origin(request)
-    body = await request.json()
-    fields = {}
-    if body.get("status") in ("new", "contacted", "replied", "won", "not_interested"):
-        fields["status"] = body["status"]
-        if body["status"] == "contacted":
-            fields["contacted_at"] = time.time()
-    if "notes" in body:
-        fields["notes"] = str(body["notes"])[:2000]
-    if not leadfinder.update_lead(lead_id, **fields):
-        raise HTTPException(404, "Lead not found")
-    return {"ok": True}
-
-
-@app.post("/api/leads/{lead_id}/site")
-async def lead_site(lead_id: str, request: Request):
-    _same_origin(request)
-    if not config.ANTHROPIC_API_KEY:
-        raise HTTPException(400, "Connect Claude first: on the main page, pick Stream / podcast and click Connect Claude.")
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-    model = body.get("model") if body.get("model") in {m["id"] for m in config.CLAUDE_MODELS} else None
-    sitegen.start(lead_id, model)
-    return {"started": True}
-
-
-@app.get("/leads/site/{lead_id}", response_class=HTMLResponse)
-def lead_site_preview(lead_id: str):
-    if not re.fullmatch(r"[A-Za-z0-9_\-]{5,200}", lead_id):
-        raise HTTPException(404)
-    f = config.DATA_DIR / "sites" / lead_id / "index.html"
-    if not f.exists():
-        raise HTTPException(404, "No site made for this business yet.")
-    return HTMLResponse(f.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
 
 
 @app.delete("/api/jobs/{job_id}")

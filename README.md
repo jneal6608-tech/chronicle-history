@@ -44,22 +44,6 @@ How stream clips are chosen:
 
 ---
 
-## Website leads
-
-Open **Find website leads →** at the top of the studio (or go to `/leads`). It finds local businesses with no website, a social-media-only "site", a broken site or a weak one, and ranks them by priority.
-
-- **Searching:** starts around your town and spreads outward in rings of map tiles until it has the number of leads you asked for, reaches your maximum distance, or uses your monthly Google limit. Business data comes from Google Maps (Places API).
-- **Abandoned businesses are skipped:** marked closed, no reviews, or no review in two years. Ones with little activity are labelled "Activity unclear" and lose priority.
-- **Website check:** every site is downloaded and checked for phone-friendliness, https, outdated copyright, old builders, tap-to-call, quote/booking forms, speed and search basics. Click **What could be improved** for the list. Emails are taken from the site or its contact page; for businesses with no site, **Search for it ↗** opens a Google search.
-- **Priority (0–100):** need for a site 30%, how busy (review count) 18%, recent reviews 12%, value of a site for that kind of business 12%, reachable by email/phone 10%, distance 10%, rating 8%. Google doesn't share sales, so "busy" is estimated from reviews.
-- **Create website:** Claude (Sonnet by default, `CH_SITE_MODEL`) designs a one-page site from the business's Google details and current site. Each preview has a banner saying it's a concept by you and not their official site, is hidden from search engines, and never invents testimonials, prices or awards. Roughly 5–20¢ each. With GitHub set up, it's published as a preview link.
-- **Contact:** opens Gmail (or your mail app) with the email written and addressed, including the preview link or the list of fixes, and your name, mailing address and an opt-out line (required by US law for business emails). The lead is marked Contacted. **Call script** gives you a short phone opener.
-- **Costs:** Google gives 1,000 searches a month free (each returns up to 20 businesses); the app stops at the limit you set (900 by default). Google details are refreshed or removed after 30 days, as Google's terms require.
-
-Setup steps for the Google key and GitHub preview links are in the page's **Settings**.
-
----
-
 ## How it works on a Chromebook
 
 ChromeOS can run Linux apps in a built-in, sealed-off Linux environment. Chronicle Shorts runs its editing engine there (Python, FFmpeg and the Whisper speech model). You use it from Chrome like any website.
