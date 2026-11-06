@@ -7,7 +7,7 @@ from pathlib import Path
 
 SECTIONS = [
  ("Intro", "gradients=s=1920x1080:r=25:c0=#1a1208:c1=#6b4a1e:speed=0.03",
-  "Welcome back to Chronicle History. In today's video, we travel across five centuries of strange and dramatic history. Before we begin, make sure to subscribe and turn on the notification bell."),
+  "Welcome back to the channel. In today's video, we travel across five centuries of strange and dramatic history. Before we begin, make sure to subscribe and turn on the notification bell."),
  ("Constantinople 1453", "life=s=480x270:mold=10:r=25:ratio=0.1:death_color=#1b0f05:life_color=#d9a441,scale=1920:1080:flags=neighbor",
   "In the spring of 1453, the greatest city in the Christian world was surrounded. Constantinople had stood for more than a thousand years. Its triple walls had turned back Persians, Arabs and Bulgars. But the young Ottoman sultan, Mehmed the Second, had brought something new. Giant bronze cannons, built by a Hungarian engineer named Orban, hurled stone balls weighing hundreds of kilograms against the ancient walls. For fifty three days the defenders repaired the damage every night. Mehmed even dragged his ships over land, on greased logs, into the Golden Horn, behind the great chain that protected the harbor. On the twenty ninth of May, the Ottoman army broke through. The last emperor, Constantine the Eleventh, died fighting in the streets. The Byzantine Empire, the final remnant of Rome, was gone forever. And to this day, historians use that morning to mark the end of the Middle Ages."),
  ("The Great Emu War", "cellauto=s=480x270:rule=110:r=25:random_fill_ratio=0.5,scale=1920:1080:flags=neighbor,negate",
@@ -17,7 +17,7 @@ SECTIONS = [
  ("Defenestration of Prague", "life=s=320x180:r=25:ratio=0.2:death_color=#08131f:life_color=#7fb0d9,scale=1920:1080:flags=neighbor",
   "On the twenty third of May, 1618, a group of angry Protestant nobles marched into Prague Castle. They confronted two Catholic officials of the Habsburg emperor, accused them of violating religious freedom, and threw them out of a window. The officials fell about twenty one meters. Incredibly, both survived. Catholics claimed angels had caught them. Protestants said they had landed in a pile of manure. Either way, the insult could not be forgiven. The incident sparked a rebellion in Bohemia, and the rebellion grew into the Thirty Years War, one of the deadliest conflicts in European history. Millions died before the Peace of Westphalia finally ended the war in 1648, and changed the map of Europe forever."),
  ("Outro", "gradients=s=1920x1080:r=25:c0=#101820:c1=#405060:speed=0.03",
-  "Thanks for watching this episode of Chronicle History. If you enjoyed it, like the video, comment below with the story that surprised you most, and subscribe for the next video. See you next time."),
+  "Thanks for watching this episode. If you enjoyed it, like the video, comment below with the story that surprised you most, and subscribe for the next video. See you next time."),
 ]
 
 def run(c): subprocess.run(c, check=True, capture_output=True)

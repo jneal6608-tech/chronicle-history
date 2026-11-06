@@ -194,7 +194,7 @@ def render_clip(src: Path, info: media.VideoInfo, box, seg: dict, words: list[di
         words_out.append({"w": w["w"], "s": round(s, 3), "e": round(max(e, s + 0.05), 3)})
     ass = build_ass(words_out, out_len, lay["cap_y"], seg.get("title", ""), lay["title_y"], lay["tag_y"],
                     seg.get("keywords", []), style=settings.get("captions", "clean"),
-                    show_tag=config.SHOW_CHANNEL_TAG and not stream, title_dur=lay["title_dur"])
+                    show_tag=not stream, title_dur=lay["title_dur"])
     (out_dir / "captions.ass").write_text(ass, encoding="utf-8")
     fonts = out_dir / "fonts"
     fonts.mkdir(exist_ok=True)

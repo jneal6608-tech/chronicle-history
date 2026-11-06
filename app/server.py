@@ -68,7 +68,7 @@ def health():
     free = shutil.disk_usage(config.DATA_DIR).free / 1e9
     checks.append({"name": "Disk space", "ok": free > 3, "detail": f"{free:.1f} GB free in {config.DATA_DIR}"})
     return {"ok": all(c["ok"] for c in checks), "checks": checks, "engine": engine,
-            "max_upload_gb": config.MAX_UPLOAD_GB, "channel": config.CHANNEL_NAME,
+            "max_upload_gb": config.MAX_UPLOAD_GB, "watermark": config.WATERMARK,
             "chromeos": config.IS_CHROMEOS, "has_key": has_key and config.ANALYSIS_MODE != "offline",
             "models": [{"id": m["id"], "label": m["label"]} for m in config.CLAUDE_MODELS],
             "default_model": config.CLAUDE_MODEL,

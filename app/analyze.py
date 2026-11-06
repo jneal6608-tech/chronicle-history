@@ -318,35 +318,17 @@ def name_phrases(sents: list[dict]) -> Counter:
     return found
 
 
-def _era_tag(text: str) -> str | None:
-    if re.search(r"\b\d+\s?(BC|BCE)\b", text, re.I):
-        return "#ancienthistory"
-    years = [int(y) for y in re.findall(r"\b(1[0-9]{3}|[5-9][0-9]{2})\b", text)]
-    if not years:
-        return None
-    y = years[0]
-    return ("#medievalhistory" if y < 1500 else "#earlymodernhistory" if y < 1800
-            else "#19thcentury" if y < 1900 else "#20thcentury" if y < 2000 else None)
-
-
 def _hashtags(names: list[str], drama: list[str], phrases: Counter | None = None, text: str = "") -> list[str]:
-    tags = ["#history", "#shorts", config.CHANNEL_HASHTAG]
+    """#shorts, any hashtags you set in .env, then the clip's own names and topics."""
+    tags = ["#shorts"] + config.EXTRA_HASHTAGS
     ranked = sorted((phrases or Counter(names)).items(), key=lambda kv: (-kv[1], -len(kv[0])))
-    for n, _ in ranked[:3]:
+    for n, _ in ranked[:4]:
         tag = "#" + re.sub(r"[^A-Za-z0-9]", "", n)
         if len(tag) > 3 and tag.lower() not in {t.lower() for t in tags}:
             tags.append(tag)
-    era = _era_tag(text)
-    if era:
-        tags.append(era)
-    themed = {"war": "#militaryhistory", "battle": "#militaryhistory", "siege": "#militaryhistory",
-              "pharaoh": "#ancientegypt", "king": "#royalhistory",
-              "queen": "#royalhistory", "mystery": "#historymystery", "secret": "#historyfacts",
-              "discovered": "#historyfacts", "revolution": "#revolution", "plague": "#medievalhistory"}
-    for d in drama:
-        if d in themed and themed[d] not in tags:
-            tags.append(themed[d])
-    tags.append("#historyfacts" if "#historyfacts" not in tags else "#didyouknow")
+    for t in ("#explained", "#didyouknow"):
+        if t not in tags:
+            tags.append(t)
     return tags[:9]
 
 
@@ -434,7 +416,7 @@ def offline_select(sents, scenes, total_dur, progress=None, L=None, want=None) -
                              " ".join(x["text"] for x in sents[c["i"]:c["j"] + 1]))
             kw = [n for n, _ in Counter(c["names"]).most_common(6)] + c["drama_words"][:4]
             clips.append({"start_sentence": c["i"], "end_sentence": c["j"], "title": title,
-                          "description": f"{desc}\n\nFull documentary on {config.CHANNEL_NAME}.",
+                          "description": desc,
                           "hashtags": tags, "why_selected": _explain(c), "keywords": kw,
                           "scores": c["parts"], "rank": rank + 1})
     clips.sort(key=lambda x: x["start_sentence"])
@@ -603,7 +585,7 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
             if len(desc) > 180:
                 desc = desc[:177].rsplit(" ", 1)[0] + "…"
             names = [n for n, _ in sorted(name_phrases(seg).items(), key=lambda kv: -kv[1])[:3]]
-            tags = ["#shorts", "#clips"] + ["#" + re.sub(r"[^A-Za-z0-9]", "", nm) for nm in names
+            tags = ["#shorts", "#clips"] + config.EXTRA_HASHTAGS + ["#" + re.sub(r"[^A-Za-z0-9]", "", nm) for nm in names
                                             if len(re.sub(r"[^A-Za-z0-9]", "", nm)) > 2] + ["#streamerclips"]
             clips.append({"start_sentence": c["i"], "end_sentence": c["j"], "title": title, "description": desc,
                           "hashtags": list(dict.fromkeys(tags))[:8], "why_selected": why,
@@ -653,7 +635,7 @@ def _brief_schema() -> dict:
             "additionalProperties": False}
 
 
-DOC_SCORES = ("storytelling", "historical_significance", "curiosity", "pacing", "standalone_value")
+DOC_SCORES = ("storytelling", "significance", "curiosity", "pacing", "standalone_value")
 STREAM_SCORES = ("hook", "payoff", "entertainment", "energy", "standalone_value")
 
 
@@ -745,7 +727,7 @@ For each selected clip write:
 Accuracy: describe only what is actually said in the clip. Never invent claims about real people.
 Use documentary_summary for a 1-2 sentence summary of the whole video."""
     else:
-        base = f"""You are the short-form editor for {config.CHANNEL_NAME}, a narrated animated explainer YouTube channel.
+        base = f"""You are the short-form editor for a narrated, animated explainer YouTube channel that covers any topic.
 You receive the complete timestamped narration of one finished long-form video, split into
 numbered sentences, plus a per-minute visual-pacing signal (scene changes per minute).
 
@@ -767,15 +749,15 @@ Avoid: channel intros/outros, sponsor reads, calls to subscribe, recaps, and sec
 in context. Selected shorts must not overlap and must not tell the same story twice.
 
 Process: read the whole transcript first. Then list {n_cands} candidate segments drawn from across the entire
-video (not just the beginning), each scored 0-10 on storytelling, historical_significance (for non-history
-topics: how significant or surprising the idea is), curiosity, pacing and standalone_value, with an overall
+video (not just the beginning), each scored 0-10 on storytelling, significance (how important or surprising the
+idea is), curiosity, pacing and standalone_value, with an overall
 0-100 and a one-sentence assessment. Then select the best {want} candidates (by candidate_index into your
 list) - choose fewer only if the extra ones would be weak.
 
 For each selected short write:
 - title: a scroll-stopping title, max 70 characters, no clickbait that the clip does not pay off;
 - description: 1-3 sentences for the post caption;
-- hashtags: 5-9 hashtags including #shorts {config.CHANNEL_HASHTAG} and topic tags;
+- hashtags: 5-9 hashtags including #shorts{(" " + " ".join(config.EXTRA_HASHTAGS)) if config.EXTRA_HASHTAGS else ""} and topic tags;
 - why_selected: 1-2 sentences explaining why this works as a standalone short;
 - highlight_words: 4-12 important words that appear verbatim in that segment's narration
   (names, places, dates, numbers, key nouns) to colour in the captions.

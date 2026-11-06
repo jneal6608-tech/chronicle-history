@@ -207,8 +207,8 @@ Edit with `nano .env` in the project folder, then restart the app.
 | `CH_CLAUDE_MODEL` | `claude-opus-5-5` | Which Claude model analyses the story |
 | `CH_WHISPER_MODEL` | `base` | `tiny` is faster, `small` is more accurate |
 | `CH_X264_PRESET` | `veryfast` | `medium` gives slightly smaller files but is ~3× slower |
-| `CH_CHANNEL_NAME` / `CH_CHANNEL_HASHTAG` | Chronicle History | Branding on screen and in hashtags |
-| `CH_SHOW_CHANNEL_TAG` | `1` | Set `0` to hide the channel tag on screen (never shown on stream clips) |
+| `CH_WATERMARK` | empty | Small text at the top of documentary clips (empty = none) |
+| `CH_EXTRA_HASHTAGS` | empty | Hashtags added to every clip, e.g. `#mychannel #facts` |
 | `CH_CLAUDE_CHUNK_MINUTES` | `60` | Long videos are read by Claude in parts of this length |
 | `CH_STREAM_SPEED` | `1.0` | Playback speed of stream clips |
 | `CH_MAX_SOURCE_MINUTES` | `480` | Longest video accepted |

@@ -150,7 +150,7 @@ def build_ass(words: list[dict], clip_len: float, cap_y: int, title: str, title_
     """`words` must already be in output time (seconds from the start of the short).
     `title_dur` shows the title only for the first N seconds (None = whole clip)."""
     st = STYLES.get(style, STYLES["clean"])
-    show_tag = config.SHOW_CHANNEL_TAG if show_tag is None else show_tag
+    show_tag = bool(config.WATERMARK) and (True if show_tag is None else show_tag)
     kw = set()
     for k in keywords:
         for part in re.findall(r"[A-Za-z0-9']+", k.lower()):
@@ -160,7 +160,7 @@ def build_ass(words: list[dict], clip_len: float, cap_y: int, title: str, title_
                           cap_outline=st["outline"], cap_shadow=st["shadow"], title_size=st["title"])]
     if show_tag:
         out.append(f"Dialogue: 1,{_ts(0)},{_ts(clip_len)},Tag,,0,0,0,,{{\\an8\\pos(540,{tag_y})}}"
-                   f"{config.CHANNEL_NAME.upper()}")
+                   f"{config.WATERMARK.upper().replace('{', '(').replace('}', ')')}")
     if title:
         safe = wrap_title(title.replace("{", "(").replace("}", ")").replace("\\", "/"))
         t_end = clip_len if title_dur is None else min(clip_len, title_dur)

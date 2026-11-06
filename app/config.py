@@ -3,6 +3,7 @@ them in the `.env` file next to this folder (copy `.env.example`)."""
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,9 +56,10 @@ MAX_SOURCE_MINUTES = _float("CH_MAX_SOURCE_MINUTES", 480.0)  # 8 h covers long s
 RESULTS_FILE = DATA_DIR / "results.json"
 
 # --- Branding ---------------------------------------------------------------
-CHANNEL_NAME = _get("CH_CHANNEL_NAME", "Chronicle History")
-CHANNEL_HASHTAG = _get("CH_CHANNEL_HASHTAG", "#ChronicleHistory")
-SHOW_CHANNEL_TAG = _get("CH_SHOW_CHANNEL_TAG", "1") == "1"
+# Optional branding. Both are empty by default, so clips carry no channel name at all.
+# (The old CH_CHANNEL_NAME / CH_CHANNEL_HASHTAG / CH_SHOW_CHANNEL_TAG settings are ignored.)
+WATERMARK = _get("CH_WATERMARK", "").strip()          # small text at the top of documentary-mode clips
+EXTRA_HASHTAGS = ["#" + t.lstrip("#") for t in re.split(r"[\s,]+", _get("CH_EXTRA_HASHTAGS", "")) if t.lstrip("#")]
 
 # --- Speech to text (faster-whisper, free, runs locally) ---------------------
 # tiny / base / small / medium / large-v3, or a path to a local model folder.
