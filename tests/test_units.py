@@ -98,3 +98,38 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
             print("ok", name)
+
+
+def test_smarter_cuts():
+    from app import render
+    # Leading filler is dropped so the clip opens on the real first word.
+    w = _words("so um okay the king was poisoned at dinner that night")
+    assert render.trim_lead_in(w[0]["s"], w[-1]["e"], w, stream=True) == w[3]["s"]
+    # Documentary narration keeps "okay" only when it is not a lead-in; "so" is always dropped.
+    assert render.trim_lead_in(w[0]["s"], w[-1]["e"], w, stream=False) == w[3]["s"]
+    # "um" between two words is cut in stream mode and its caption disappears.
+    w = _words("this is um insane")
+    length = w[-1]["e"] + 0.2
+    keep = render.plan_cuts(w, [], length, cut_fillers=True)
+    assert not render.is_kept(w[2]["s"] + 0.04, w[2]["e"] - 0.04, keep)
+    assert all(render.is_kept(x["s"], x["e"], keep) for k, x in enumerate(w) if k != 2)
+    # A long gap is shortened when quiet, but kept when it is loud (a reaction).
+    w = [{"w": "wait", "s": 0.0, "e": 0.3}, {"w": "what", "s": 3.0, "e": 3.3}]
+    short = render.plan_cuts(w, [], 3.5, word_gap=0.6, gap_keep=0.25)
+    assert sum(b - a for a, b in short) < 1.2
+    loud = render.plan_cuts(w, [], 3.5, word_gap=0.6, gap_keep=0.25, quiet=lambda a, b: False)
+    assert sum(b - a for a, b in loud) == 3.5
+
+
+def test_reaction_tail_is_kept():
+    from app import render
+    w = _words("that was the funniest thing ever")
+    end = w[-1]["e"]
+    z = [0.0] * 40
+    for k in range(int(end / 0.5), int(end / 0.5) + 5):   # 2.5 s of laughter after the last word
+        z[k] = 4.0
+    a, b = render.plan_window({"start": w[0]["s"], "end": end}, w, 20.0, stream=True,
+                              energy={"hop": 0.5, "z": z})
+    assert b >= end + 2.4
+    a2, b2 = render.plan_window({"start": w[0]["s"], "end": end}, w, 20.0)
+    assert b2 <= end + 0.5

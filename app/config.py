@@ -110,7 +110,8 @@ def default_settings(mode: str = "documentary") -> dict:
             "layout": "fit",
             "facecam": {"corner": "bl", "size": 0.30},
             "captions": "pop" if stream else "clean",
-            "max_clips": 0,          # 0 = automatic
+            "max_clips": 0,          # 0 = automatic: every strong moment, up to CLIP_CAP
+            "teaser": stream,        # open with a flash of the payoff (on for streams)
             "brief": ""}
 
 
@@ -133,9 +134,11 @@ def clean_settings(raw: dict | None) -> dict:
     except (TypeError, ValueError):
         pass
     try:
-        s["max_clips"] = max(0, min(40, int(raw.get("max_clips", 0))))
+        s["max_clips"] = max(0, min(CLIP_CAP, int(raw.get("max_clips", 0))))
     except (TypeError, ValueError):
         pass
+    if isinstance(raw.get("teaser"), bool):
+        s["teaser"] = raw["teaser"]
     s["brief"] = str(raw.get("brief") or "")[:6000]
     return s
 
@@ -149,8 +152,25 @@ MIN_SPEED, MAX_SPEED = 1.05, 1.15
 # Target length of a finished short (seconds, after speed-up).
 TARGET_MIN_S, TARGET_MAX_S = 60.0, 90.0
 ABS_MIN_S = 25.0          # never output a short below this
-MIN_CLIPS, MAX_CLIPS = 3, 5
-STREAM_MIN_CLIPS, STREAM_MAX_CLIPS = 3, 30
+# "Automatic" clip count: every moment that clears the quality bar is kept, up to CLIP_CAP.
+# There is no fixed number any more; a strong video can give 15 shorts, a weak one 2.
+CLIP_CAP = max(1, min(40, int(_float("CH_CLIP_CAP", 20))))
+MIN_CLIPS = 1                      # always deliver at least this many
+QUALITY_BAR = _float("CH_QUALITY_BAR", 70)   # Claude's 0-100 "overall" a clip needs to be kept
+MAX_CLIPS = STREAM_MAX_CLIPS = CLIP_CAP      # old names, kept for anything importing them
+STREAM_MIN_CLIPS = MIN_CLIPS
+
+# --- Hooks and cuts ---------------------------------------------------------------
+# Teaser: open the short with a 1-4 s flash of its own payoff line, then play the clip from the start.
+TEASER_MAX_S = _float("CH_TEASER_MAX_S", 4.0)
+# Pauses inside a clip are shortened to this many seconds (documentary / stream).
+DOC_PAUSE_KEEP = _float("CH_DOC_PAUSE_KEEP", 0.35)
+STREAM_PAUSE_KEEP = _float("CH_STREAM_PAUSE_KEEP", 0.25)
+# Filler words cut out of stream clips ("um", "uh"). Documentary narration is left untouched.
+FILLERS = {"um", "uh", "umm", "uhh", "erm", "er", "ah", "hmm", "mm", "mhm"}
+# Leading words dropped from the very start of a clip so it opens on the real first word.
+LEAD_IN_FILLERS = FILLERS | {"so", "okay", "ok", "anyway", "anyways", "like", "yeah", "well", "alright",
+                             "right", "and", "but", "now"}
 
 FONTS_DIR = APP_DIR / "assets" / "fonts"
 CAPTION_FONT = "Montserrat ExtraBold"

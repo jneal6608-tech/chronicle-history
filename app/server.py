@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import config, credits, media, pipeline, results
+from . import config, credits, instagram, media, pipeline, results
 
 app = FastAPI(title="Chronicle Shorts", docs_url=None, redoc_url=None)
 
@@ -34,6 +34,7 @@ async def private_network(request: Request, call_next):
 @app.on_event("startup")
 def _startup() -> None:
     pipeline.recover_interrupted()
+    instagram.ensure_worker()   # finishes any Instagram posts still waiting in the queue
 
 
 # ------------------------------------------------------------------ UI
@@ -232,8 +233,9 @@ def credits_summary():
 def credits_estimate(minutes: float, model: str = "", mode: str = "documentary", clips: int = 0):
     model = model if model in {m["id"] for m in config.CLAUDE_MODELS} else config.CLAUDE_MODEL
     mode = mode if mode in config.MODES else "documentary"
-    from .analyze import clip_count
-    n = clip_count(minutes * 60, mode, max(0, clips))
+    from .analyze import clip_count, expected_clips
+    # Automatic runs keep only the strong moments, so estimate the usual count, not the cap.
+    n = clip_count(minutes * 60, mode, clips) if clips > 0 else expected_clips(minutes * 60, mode)
     return {**credits.estimate(max(0.1, minutes), model, mode, n), "clips": n}
 
 
@@ -267,6 +269,67 @@ async def credits_balance(request: Request):
     except ValueError:
         raise HTTPException(400, "Enter a dollar amount, like 5 or 12.50.")
     return credits.add_credits(amount) if body.get("action") == "add" else credits.set_balance(amount)
+
+
+# ------------------------------------------------------------------ Instagram
+
+@app.get("/api/instagram")
+def instagram_status():
+    return instagram.status()
+
+
+@app.post("/api/instagram/connect")
+async def instagram_connect(request: Request):
+    _same_origin(request)
+    b = await request.json()
+    try:
+        return instagram.connect(str(b.get("token", "")), str(b.get("user_id", "")),
+                                 str(b.get("app_id", "")), str(b.get("app_secret", "")))
+    except instagram.InstagramError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/instagram/connect")
+def instagram_disconnect(request: Request):
+    _same_origin(request)
+    return instagram.disconnect()
+
+
+@app.post("/api/instagram/options")
+async def instagram_options(request: Request):
+    _same_origin(request)
+    b = await request.json()
+    try:
+        gap = int(b["gap_minutes"]) if "gap_minutes" in b else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Spacing should be a number of minutes.")
+    auto = bool(b["auto"]) if "auto" in b else None
+    return instagram.set_options(auto=auto, gap_minutes=gap)
+
+
+@app.post("/api/jobs/{job_id}/clips/{index}/instagram")
+async def clip_instagram(job_id: str, index: int, request: Request):
+    """Queue one short for Instagram. now=true posts it next, ignoring the spacing."""
+    _same_origin(request)
+    st = _get(job_id)
+    c = next((c for c in st["clips"] if c["index"] == index), None)
+    if not c or c.get("status") != "done":
+        raise HTTPException(409, "This short isn't ready yet.")
+    if not instagram.connected():
+        raise HTTPException(400, "Connect Instagram first.")
+    b = await request.json()
+    caption = b.get("caption")
+    instagram.enqueue(job_id, index, caption=str(caption)[:2200] if caption is not None else None,
+                      now=bool(b.get("now", True)))
+    return pipeline.load(job_id)
+
+
+@app.delete("/api/jobs/{job_id}/clips/{index}/instagram")
+def clip_instagram_cancel(job_id: str, index: int, request: Request):
+    _same_origin(request)
+    _get(job_id)
+    instagram.dequeue(job_id, index)
+    return pipeline.load(job_id)
 
 
 @app.delete("/api/jobs/{job_id}")

@@ -15,7 +15,7 @@ from . import media, pipeline
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Turn a documentary MP4 into 3-5 finished shorts.")
+    ap = argparse.ArgumentParser(description="Turn a long MP4 into finished shorts (every strong moment, up to 20).")
     ap.add_argument("video", type=Path)
     ap.add_argument("--out", type=Path, default=None, help="copy finished shorts + ZIP here")
     a = ap.parse_args()

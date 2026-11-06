@@ -1,9 +1,12 @@
 """Finds the best standalone moments in a long video.
 
 Two content modes:
-  * documentary - narrated explainers: 3-5 complete stories of 60-90 s.
-  * stream      - streams, podcasts, influencer videos: many 20-60 s moments,
+  * documentary - narrated explainers: complete stories of 60-90 s.
+  * stream      - streams, podcasts, influencer videos: 20-60 s moments,
                   guided by loudness spikes (reactions, laughter) as well as speech.
+
+There is no fixed number of clips: in automatic mode every moment that clears the
+quality bar is kept, up to config.CLIP_CAP (20).
 
 Two engines share the same validation step:
   * Claude (recommended) - reads the whole timestamped transcript (in chunks for
@@ -84,6 +87,8 @@ ENDING_PHRASES = ["to this day", "ever since", "forever", "would never", "never 
 DANGLING = {"he", "she", "they", "it", "this", "that", "these", "those", "his", "her", "their", "its",
             "and", "but", "so", "then", "also", "which", "however", "meanwhile", "him", "them", "there"}
 
+FILLER_START = {"um", "uh", "so", "okay", "ok", "anyway", "anyways", "yeah", "well", "like", "alright"}
+
 PROMO = ["subscribe", "patreon", "sponsor", "sponsored", "thanks for watching", "thank you for watching",
          "like and", "comment below", "next video", "this video", "link in the description", "welcome back",
          "welcome to", "notification bell", "members of the channel", "see you next", "in today's video"]
@@ -119,7 +124,10 @@ def _hook_score(text: str) -> tuple[float, list[str]]:
     score, why = 0.0, []
     if not toks:
         return -1.0, ["empty"]
-    if toks[0] in DANGLING:
+    if toks[0] in FILLER_START:
+        score -= 0.6
+        why.append(f"opens on filler '{toks[0]}'")
+    elif toks[0] in DANGLING:
         score -= 0.9 if toks[0] in {"he", "she", "they", "it", "him", "them", "its", "his", "her", "their"} else 0.5
         why.append(f"opens with '{toks[0]}' (needs context)")
     if text.rstrip().endswith("?"):
@@ -258,11 +266,20 @@ def score_window(sents, i, j, scenes, avg_scene_rate, total_dur, bounds=None, L=
 
 
 def target_clip_count(duration: float) -> int:
-    if duration < 8 * 60:
-        return 3
-    if duration < 20 * 60:
-        return 4
-    return 5
+    """Rough number of documentary shorts to expect (only used for cost estimates now)."""
+    return expected_clips(duration, "documentary")
+
+
+def expected_clips(duration: float, mode: str) -> int:
+    """How many clips an automatic run usually ends up with; used for estimates, not as a limit."""
+    per = 6 * 60 if mode == "stream" else 3 * 60
+    return int(max(1, min(config.CLIP_CAP, round(duration / per))))
+
+
+# Offline engines: a clip is kept automatically when its relative score (0-100, best clip = 98)
+# reaches this. Fixed-count requests use the lower bar so they can still fill the number asked for.
+OFFLINE_AUTO_BAR = 76
+OFFLINE_FIXED_BAR = 58
 
 
 def _overlap(a, b) -> float:
@@ -354,6 +371,19 @@ def _explain(c) -> str:
     return s[0].upper() + s[1:] + "."
 
 
+def _pick_ranked(ranked: list[dict], want: int, auto: bool) -> list[dict]:
+    """Keep ranked offline candidates (best first) that clear the bar, at least MIN_CLIPS, at most `want`."""
+    bar = OFFLINE_AUTO_BAR if auto else OFFLINE_FIXED_BAR
+    out = []
+    for c in ranked:
+        if len(out) >= want:
+            break
+        if len(out) >= config.MIN_CLIPS and _pct(c["score"], ranked) < bar:
+            break
+        out.append(c)
+    return out
+
+
 def _pct(score: float, ranked: list[dict]) -> int:
     """Show offline scores on a 0-100 scale relative to the best story found."""
     hi = max(c["score"] for c in ranked)
@@ -361,7 +391,7 @@ def _pct(score: float, ranked: list[dict]) -> int:
     return int(round(40 + 58 * (score - lo) / max(1e-6, hi - lo)))
 
 
-def offline_select(sents, scenes, total_dur, progress=None, L=None, want=None) -> dict:
+def offline_select(sents, scenes, total_dur, progress=None, L=None, want=None, auto: bool = False) -> dict:
     L = L or DOC_LIMITS
     avg_rate = len(scenes) / max(total_dur / 60, 1) if scenes else 0
     bounds = boundary_strengths(sents, scenes)
@@ -377,7 +407,9 @@ def offline_select(sents, scenes, total_dur, progress=None, L=None, want=None) -
         if progress and i % 25 == 0:
             progress(i / max(len(sents), 1))
     cands.sort(key=lambda c: -c["score"])
-    want = want or target_clip_count(total_dur)
+    want = want or config.CLIP_CAP
+    if auto:  # a documentary rarely holds more than one strong standalone story per ~2 minutes
+        want = min(want, max(1, int(total_dur // 120)))
     chosen: list[dict] = []
     ranked: list[dict] = []
     for c in cands:
@@ -390,13 +422,7 @@ def offline_select(sents, scenes, total_dur, progress=None, L=None, want=None) -
             break
     if not ranked:
         return {"candidates": [], "clips": []}
-    best = ranked[0]["score"]
-    for c in ranked:
-        if len(chosen) >= want:
-            break
-        if len(chosen) >= config.MIN_CLIPS and c["score"] < 0.55 * best:
-            break
-        chosen.append(c)
+    chosen = _pick_ranked(ranked, want, auto)
     clips, cand_out = [], []
     for rank, c in enumerate(ranked):
         sel = c in chosen
@@ -467,12 +493,11 @@ def _dur_fit_l(d: float, L: Limits) -> float:
 
 
 def clip_count(duration: float, mode: str, requested: int = 0) -> int:
-    """How many clips to make. Streams: about one per 8 minutes of video, 3 to 30."""
+    """The most clips this run may produce: the number asked for, or CLIP_CAP (20) in automatic mode.
+    In automatic mode the real number is decided by quality, so it is usually lower."""
     if requested:
-        return max(1, min(requested, config.STREAM_MAX_CLIPS if mode == "stream" else 10))
-    if mode == "stream":
-        return int(max(config.STREAM_MIN_CLIPS, min(config.STREAM_MAX_CLIPS, round(duration / 60 / 8))))
-    return target_clip_count(duration)
+        return max(1, min(requested, config.CLIP_CAP))
+    return config.CLIP_CAP
 
 
 # --------------------------------------------------------------------------- offline engine: streams
@@ -503,13 +528,14 @@ def _sentence_features(sents, energy) -> list[dict]:
             "q": s["text"].rstrip().endswith("?"),
             "z": peak_energy(energy, s["s"], s["e"]),
             "dangling": bool(toks) and toks[0] in DANGLING,
+            "filler": bool(toks) and toks[0] in FILLER_START,
             "promo": sum(1 for p in STREAM_PROMO if p in low),
             "nw": max(1, len(toks)),
         })
     return feats
 
 
-def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progress=None) -> dict:
+def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progress=None, auto: bool = False) -> dict:
     """Free scorer for streams/podcasts: loud reactions, laughter, hype language,
     a clean opening and a payoff near the end. Uses prefix sums so a 4-hour VOD
     (thousands of sentences) still scores in seconds."""
@@ -527,6 +553,8 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
             + min(0.8, 0.3 * f[i]["hype"]) + min(0.6, max(0.0, f[i]["z"]) * 0.15) + (0.3 if f[i]["laugh"] else 0)
         if i + 1 < n:
             hook = max(hook, 0.7 * (min(0.8, 0.3 * f[i + 1]["hype"]) + min(0.6, max(0.0, f[i + 1]["z"]) * 0.15)) - 0.2)
+        if f[i]["filler"]:
+            hook -= 0.4
         hype = words = promo = laughs = 0.0
         peak, peak_at = -9.0, i
         for j in range(i, n):
@@ -553,13 +581,15 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
                      + 0.9 * payoff + 0.6 * ending + 0.5 * start_gap + 1.0 * _dur_fit_l(d, L) - 1.6 * promo)
             cands.append({"i": i, "j": j, "start": sents[i]["s"], "end": sents[j]["e"], "score": round(score, 3),
                           "peak": round(peak, 2), "peak_t": sents[peak_at]["s"], "hype": round(hype, 1),
-                          "laughs": int(laughs), "q": f[i]["q"],
+                          "laughs": int(laughs), "q": f[i]["q"], "peak_k": peak_at,
                           "parts": {"hook": round(hook, 2), "energy_peak": round(peak, 2),
                                     "hype_density": round(density, 2), "payoff": round(payoff, 2),
                                     "ending": round(ending, 2), "duration_fit": round(_dur_fit_l(d, L), 2)}})
         if progress and i % 200 == 0:
             progress(i / n)
     cands.sort(key=lambda c: -c["score"])
+    if auto:  # the free scorer is less sure than Claude, so it is held to about one clip per 3 minutes
+        want = min(want, max(1, int(total_dur // 180)))
     ranked: list[dict] = []
     limit = max(want * 2, 10)
     for c in cands:
@@ -570,7 +600,7 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
             break
     if not ranked:
         return {"candidates": [], "clips": []}
-    chosen = ranked[:want]
+    chosen = _pick_ranked(ranked, want, auto) if auto else ranked[:want]
     clips, cand_out = [], []
     for rank, c in enumerate(ranked):
         sel = c in chosen
@@ -585,9 +615,13 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
             names = [n for n, _ in sorted(name_phrases(seg).items(), key=lambda kv: -kv[1])[:3]]
             tags = ["#shorts", "#clips"] + config.EXTRA_HASHTAGS + ["#" + re.sub(r"[^A-Za-z0-9]", "", nm) for nm in names
                                             if len(re.sub(r"[^A-Za-z0-9]", "", nm)) > 2] + ["#streamerclips"]
+            # Teaser: the loud payoff line, flashed before the clip starts.
+            k = c["peak_k"]
+            teaser = k if (c["peak"] >= 2.5 and k > c["i"] and sents[k]["e"] - sents[k]["s"] <= config.TEASER_MAX_S
+                           and (sents[k]["s"] - c["start"]) / max(1, c["end"] - c["start"]) >= 0.35) else -1
             clips.append({"start_sentence": c["i"], "end_sentence": c["j"], "title": title, "description": desc,
                           "hashtags": list(dict.fromkeys(tags))[:8], "why_selected": why,
-                          "keywords": names, "scores": c["parts"], "rank": rank + 1})
+                          "keywords": names, "scores": c["parts"], "rank": rank + 1, "teaser_sentence": teaser})
     clips.sort(key=lambda x: x["start_sentence"])
     return {"candidates": cand_out, "clips": clips}
 
@@ -650,7 +684,7 @@ def _brief_schema() -> dict:
             "additionalProperties": False}
 
 
-DOC_SCORES = ("storytelling", "significance", "curiosity", "pacing", "standalone_value")
+DOC_SCORES = ("hook", "storytelling", "significance", "curiosity", "payoff", "standalone_value")
 STREAM_SCORES = ("hook", "payoff", "entertainment", "energy", "standalone_value")
 
 
@@ -675,9 +709,10 @@ def _schema(mode: str) -> dict:
                                "search_tags": {"type": "array", "items": {"type": "string"}},
                                "hashtags": {"type": "array", "items": {"type": "string"}},
                                "why_selected": {"type": "string"},
-                               "highlight_words": {"type": "array", "items": {"type": "string"}}},
+                               "highlight_words": {"type": "array", "items": {"type": "string"}},
+                               "teaser_sentence": {"type": "integer"}},
                 "required": ["candidate_index", "title", "post_title", "description", "hashtags",
-                             "search_tags", "why_selected", "highlight_words"],
+                             "search_tags", "why_selected", "highlight_words", "teaser_sentence"],
                 "additionalProperties": False}},
             "brief_rules": _brief_schema(),
         },
@@ -705,38 +740,72 @@ length in seconds (0 if not stated), and every other rule as a short sentence in
 </brief>"""
 
 
-def _system(mode: str, L: Limits, want: int, brief_text: str, history: str) -> str:
-    n_cands = min(40, max(6, int(want * 1.6) + 2))
+def _pick_rule(want: int, auto: bool, n_cands: int, keys: tuple) -> str:
+    bar = int(config.QUALITY_BAR)
+    scoring = (f"List {n_cands} candidates drawn from across the ENTIRE transcript (not just the start), each scored "
+               f"0-10 on {', '.join(keys)}, with an overall 0-100 and a one-sentence assessment that names the "
+               f"hook line and the payoff line.\n"
+               "Calibrate overall honestly, as a performance prediction: 90+ = likely to outperform the account's "
+               f"best posts; {bar} = solid, would clearly hold a stranger's attention to the end; 50 = filler that "
+               "would be scrolled past. Most candidates in an average video score 40-75.")
+    if auto:
+        sel = (f"Then select EVERY candidate with overall >= {bar} (by candidate_index), best first, up to {want}. "
+               f"There is no target number: quality decides. If only one or two moments are genuinely strong, select "
+               f"only those; if the video is packed, select many. Never pad the list with weak clips - a weak clip "
+               f"costs the account reach. Always select at least the single best candidate.")
+    else:
+        sel = f"Then select the best {want} (by candidate_index), best first - fewer only if the rest would be weak."
+    return scoring + "\n" + sel + "\nSelected clips must not overlap and must not repeat the same moment or story."
+
+
+_HOOK_RULES = """THE HOOK decides everything: most viewers decide in the first 1-2 seconds. Judge the first sentence ON ITS
+OWN, as a stranger scrolling past would hear it. It must create curiosity or emotion immediately: a bold claim,
+a surprising fact, a question, conflict, a strong reaction or a funny line. If the moment's best opening line is one
+or two sentences in and it stands alone, START THERE and drop the setup. Never open on filler ("so", "um",
+"anyway", "okay so", "yeah"), on a pronoun that needs earlier context, or on slow scene-setting.
+THE PAYOFF: every clip must deliver what its hook promised - the punchline, the reaction, the reveal, the answer -
+and END within a sentence of it. Cut before the speaker moves on, recaps or trails off. A clip that runs past its
+payoff loses the rewatch.
+THE TEASER (teaser_sentence): optionally, one sentence inside the clip (not its first sentence) that is played as a
+1-4 second flash BEFORE the clip starts, then the clip plays from the beginning. Choose the line that makes a viewer
+need to know how we got there: the wildest reaction, the most outrageous claim, the setup line of the punchline.
+It must be short (about 4 seconds or less), make sense heard out of context, and must not give away the whole
+answer of a clip that is built on a reveal. Use -1 when no line works."""
+
+
+def _system(mode: str, L: Limits, want: int, brief_text: str, history: str, auto: bool = False,
+            span: float = 0.0) -> str:
+    per = 120 if mode == "stream" else 90
+    n_cands = min(40, max(8, int(span / per) if span else 8, int(want * 1.5) + 2 if not auto else 0))
     if mode == "stream":
         base = f"""You are the short-form clip editor for a clipper who posts clips of streamers, podcasts and
 influencers to TikTok, Instagram Reels and YouTube Shorts and is paid per view.
 You receive the timestamped transcript of a long video (a stream VOD, podcast or vlog), split into numbered
 sentences. A line may end with [LOUD +z]: that moment is much louder than the audio around it
-(shouting, laughter, hype, a crowd or chat going wild). Treat it as a strong hint, not a rule.
+(shouting, laughter, hype, a crowd or chat going wild). Treat it as a strong hint, not a rule: the best clips
+usually build TO a loud moment and end shortly after it.
 
 Each clip is a contiguous range of sentences [start_sentence, end_sentence] (inclusive), used exactly as
-spoken - you cannot reorder or rewrite speech.
+spoken - you cannot reorder or rewrite speech. (Pauses and "um"s are tightened automatically afterwards.)
+
+{_HOOK_RULES}
 
 A clip that goes viral:
-- hooks in the first two seconds: a bold claim, a question, a strong reaction, conflict or a funny line.
-  Never start mid-thought or on filler ("so yeah", "anyway", "um");
 - is one moment a stranger understands with no context;
-- builds to a payoff - the punchline, the reaction, the reveal, the argument's peak - and ends right after it
-  instead of trailing off;
+- has tension: a story with a punchline, an argument, a hot take, a challenge, a real reaction, a confession,
+  a surprising fact, a wholesome or emotional moment;
 - runs {L.ideal_min:.0f}-{L.ideal_max:.0f} seconds. Down to {L.src_min:.0f}s is fine for a tight moment; never exceed {L.src_max:.0f}s.
-Prefer genuinely funny moments, real reactions, hot takes, arguments, stories with a punchline,
-surprising facts, wholesome or emotional moments.
+  Shorter and complete always beats longer and padded.
 Avoid: reading donations or alerts, sponsor reads, "be right back", tech problems, setup with no payoff,
 moments that only work if you can see the screen, and anything hateful, harassing or sexual.
 
-Process: read the whole transcript first. List {n_cands} candidates from across the entire video, each scored
-0-10 on hook, payoff, entertainment, energy and standalone_value, with an overall 0-100 and a one-sentence
-assessment. Then select the best {want} (by candidate_index) - fewer only if the rest would be weak.
-Selected clips must not overlap and must not repeat the same moment.
+Process: read the whole transcript first.
+{_pick_rule(want, auto, n_cands, STREAM_SCORES)}
 
 For each selected clip write everything needed to post it, in the voice of a top clip account:
 - title: max 60 characters. It is burned onto the video as the hook text, so make it punchy and
-  curiosity-driven, no hashtags, no emoji, and nothing the clip does not deliver;
+  curiosity-driven, no hashtags, no emoji, and nothing the clip does not deliver. It should ADD to the
+  first line, not repeat it;
 - post_title: the title shown in the feed and on YouTube, max 90 characters. Specific and curious
   ("Streamer finds out chat was lying the whole time"), not generic ("Funny moment"). Name the creator
   when the transcript or brief makes clear who it is - names are what people search. At most one emoji,
@@ -746,8 +815,9 @@ For each selected clip write everything needed to post it, in the voice of a top
 - hashtags: 3-6 hashtags, most important first: the creator's name if known, the game/show/topic,
   then broader ones, including #shorts (plus any the brief requires);
 - search_tags: 5-12 plain YouTube search tags without # (creator, game/show, topic, what happens);
-- why_selected: 1-2 sentences on why this clip will hold viewers;
-- highlight_words: 3-8 key words that appear verbatim in that clip's speech (names, numbers, punchline words).
+- why_selected: 1-2 sentences on why this clip will hold viewers, naming its hook and payoff;
+- highlight_words: 3-8 key words that appear verbatim in that clip's speech (names, numbers, punchline words);
+- teaser_sentence: see THE TEASER above (-1 for none).
 Accuracy: describe only what is actually said in the clip. Never invent claims about real people.
 Use documentary_summary for a 1-2 sentence summary of the whole video."""
     else:
@@ -755,40 +825,39 @@ Use documentary_summary for a 1-2 sentence summary of the whole video."""
 You receive the complete timestamped narration of one finished long-form video, split into
 numbered sentences, plus a per-minute visual-pacing signal (scene changes per minute).
 
-Your job: find the stories in this video that would make the best standalone YouTube Shorts /
-TikToks / Reels, then pick the final set.
+Your job: find every story in this video that would make a strong standalone YouTube Short / TikTok / Reel.
 
 Each short is a contiguous range of sentences [start_sentence, end_sentence] (inclusive), used exactly as
 narrated - you cannot reorder, rewrite or add narration.
 
-A great short:
-- opens with a compelling first sentence that makes sense to a viewer who has seen nothing else
-  (no dangling "he"/"this"/"but" that refers to something earlier, unless it is obvious from the sentence);
-- tells one complete idea or story: a revelation, dramatic event, unexpected fact,
-  turning point or curiosity-driven story;
-- ends on a satisfying, conclusive sentence (a payoff or resolution, not a cliffhanger into the next chapter);
-- runs {L.ideal_min:.0f}-{L.ideal_max:.0f} seconds of source narration (it will be sped up ~1.1x).
-  Shorter (down to {L.src_min:.0f}s) is acceptable only when the story is genuinely complete and strong. Never exceed {L.src_max:.0f}s.
-Avoid: channel intros/outros, sponsor reads, calls to subscribe, recaps, and sections that only make sense
-in context. Selected shorts must not overlap and must not tell the same story twice.
+{_HOOK_RULES}
 
-Process: read the whole transcript first. Then list {n_cands} candidate segments drawn from across the entire
-video (not just the beginning), each scored 0-10 on storytelling, significance (how important or surprising the
-idea is), curiosity, pacing and standalone_value, with an overall
-0-100 and a one-sentence assessment. Then select the best {want} candidates (by candidate_index into your
-list) - choose fewer only if the extra ones would be weak.
+A great short:
+- tells one complete idea or story: a revelation, dramatic event, unexpected fact, turning point,
+  "how did this happen" or curiosity-driven story - something a viewer would repeat to a friend;
+- makes sense to a viewer who has seen nothing else (no dangling "he"/"this"/"but" that refers to something
+  earlier, unless it is obvious from the sentence);
+- ends on a satisfying, conclusive sentence (the payoff or resolution, not a cliffhanger into the next chapter);
+- runs {L.ideal_min:.0f}-{L.ideal_max:.0f} seconds of source narration (it will be sped up ~1.1x).
+  Shorter (down to {L.src_min:.0f}s) is fine when the story is complete and strong. Never exceed {L.src_max:.0f}s.
+Avoid: channel intros/outros, sponsor reads, calls to subscribe, recaps, and sections that only make sense
+in context.
+
+Process: read the whole transcript first.
+{_pick_rule(want, auto, n_cands, DOC_SCORES)}
 
 For each selected short write everything needed to post it:
 - title: a scroll-stopping title, max 70 characters, no clickbait that the clip does not pay off.
-  It is burned onto the video;
+  It is burned onto the video, so it should add curiosity to the first line rather than repeat it;
 - post_title: the upload title, max 90 characters: specific and curiosity-driven, can differ from title;
 - description: the post caption, 1-3 sentences that tease the payoff and end with a question that
   invites comments. 0-2 emoji, no hashtags here;
 - search_tags: 5-12 plain YouTube search tags without # (people, places, the topic, key terms);
 - hashtags: 5-9 hashtags including #shorts{(" " + " ".join(config.EXTRA_HASHTAGS)) if config.EXTRA_HASHTAGS else ""} and topic tags;
-- why_selected: 1-2 sentences explaining why this works as a standalone short;
+- why_selected: 1-2 sentences explaining why this works as a standalone short, naming its hook and payoff;
 - highlight_words: 4-12 important words that appear verbatim in that segment's narration
-  (names, places, dates, numbers, key nouns) to colour in the captions.
+  (names, places, dates, numbers, key nouns) to colour in the captions;
+- teaser_sentence: see THE TEASER above (-1 for none).
 
 Strict accuracy rule: titles, descriptions and hashtags must only state facts that the narration in that
 segment actually says. Do not add outside facts, dates, or claims. If unsure, stay general."""
@@ -837,7 +906,7 @@ def _call_claude(client, model: str, system: str, user: str, schema: dict) -> di
 
 def claude_select(sents, scenes, total_dur, title_hint: str, progress=None, *, mode: str = "documentary",
                   model: str | None = None, L: Limits = DOC_LIMITS, want: int = 5, energy: dict | None = None,
-                  brief_text: str = "", log: Callable[[str], None] = print, client=None) -> dict:
+                  brief_text: str = "", log: Callable[[str], None] = print, client=None, auto: bool = False) -> dict:
     """Ask Claude for candidates and picks. Long videos are sent in overlapping chunks;
     a failed chunk is logged and skipped (the offline scorer fills the gap later)."""
     if client is None:
@@ -855,12 +924,15 @@ def claude_select(sents, scenes, total_dur, title_hint: str, progress=None, *, m
     pieces = _chunks(sents, total_dur, config.CLAUDE_CHUNK_MINUTES)
     merged = {"documentary_summary": "", "candidates": [], "selected": [], "brief_rules": None,
               "_usage": {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}, "_failed_chunks": 0,
-              "_chunks": len(pieces)}
+              "_chunks": len(pieces), "_failed_ranges": []}
     for k, (a, b) in enumerate(pieces):
         part = sents[a:b]
         span = part[-1]["e"] - part[0]["s"]
-        want_k = want if len(pieces) == 1 else max(2, math.ceil(want * span / max(total_dur, 1)) + 1)
-        system = _system(mode, L, want_k, brief_text, history)
+        if auto or len(pieces) == 1:
+            want_k = want   # automatic: every strong moment in this part (the overall cap is applied after merging)
+        else:
+            want_k = max(2, math.ceil(want * span / max(total_dur, 1)) + 1)
+        system = _system(mode, L, want_k, brief_text, history, auto=auto, span=span)
         head = f"Video file: {title_hint}\nDuration: {fmt_ts(total_dur)}\n"
         if len(pieces) > 1:
             head += (f"This is part {k + 1} of {len(pieces)} of the transcript, covering "
@@ -882,6 +954,7 @@ def claude_select(sents, scenes, total_dur, title_hint: str, progress=None, *, m
             if len(pieces) == 1:
                 raise
             merged["_failed_chunks"] += 1
+            merged["_failed_ranges"].append((part[0]["s"], part[-1]["e"]))
             log(f"Claude failed on part {k + 1} of {len(pieces)} ({type(e).__name__}: {e}); skipping it.")
             continue
         off = len(merged["candidates"])
@@ -903,9 +976,11 @@ def claude_select(sents, scenes, total_dur, title_hint: str, progress=None, *, m
     return merged
 
 
-def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = None) -> dict:
-    """Validate Claude's answer against the real transcript. Never trust indices blindly."""
-    max_clips = max_clips or config.MAX_CLIPS
+def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = None, auto: bool = False) -> dict:
+    """Validate Claude's answer against the real transcript. Never trust indices blindly.
+    In automatic mode a pick below the quality bar is dropped (Claude occasionally over-selects),
+    but the best pick is always kept."""
+    max_clips = max_clips or config.CLIP_CAP
     n = len(sents)
     cands = data.get("candidates", [])
     cand_out = []
@@ -934,6 +1009,8 @@ def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = No
         clash = any(_overlap(c, x) > 0.15 for x in clips)
         if clash or len(clips) >= max_clips:
             continue
+        if auto and clips and c["score"] < config.QUALITY_BAR - 5:
+            continue
         c["selected"] = True
         seg_text = " ".join(s["text"] for s in sents[c["start_sentence"]:c["end_sentence"] + 1]).lower()
         hl = [w for w in sel.get("highlight_words", []) if w and w.lower() in seg_text]
@@ -948,7 +1025,8 @@ def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = No
                       "search_tags": [t.strip().lstrip("#") for t in sel.get("search_tags", []) if t.strip()][:15],
                       "description": sel["description"].strip(), "hashtags": tags[:10],
                       "why_selected": sel["why_selected"].strip(), "keywords": hl,
-                      "scores": c["parts"], "rank": None})
+                      "scores": c["parts"], "rank": None, "_score": c["score"],
+                      "teaser_sentence": _int(sel.get("teaser_sentence"), -1)})
     # Drop duplicate candidates from overlapping chunks (same moment listed twice).
     cand_out.sort(key=lambda c: (not c["selected"], -c["score"]))
     uniq: list[dict] = []
@@ -967,6 +1045,29 @@ def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = No
     return {"candidates": cand_out, "clips": clips, "summary": data.get("documentary_summary", "")}
 
 
+def _int(v, default: int) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def attach_teaser(clip: dict, sents: list[dict], L: Limits, enabled: bool) -> None:
+    """Turn teaser_sentence into source times, or drop it when it does not fit.
+    A teaser must sit inside the clip (not its first sentence), be short, and must not push the clip
+    past the length limit (a campaign's max length included)."""
+    k = clip.pop("teaser_sentence", -1)
+    clip.pop("teaser", None)
+    if not enabled or not isinstance(k, int) or not (clip["start_sentence"] < k <= clip["end_sentence"]):
+        return
+    s, e = sents[k]["s"], sents[k]["e"]
+    if e - s > config.TEASER_MAX_S + 0.5 or e - s < 0.6:
+        return
+    if (clip["end"] - clip["start"]) + (e - s) > L.src_max:
+        return
+    clip["teaser"] = {"sentence": k, "start": round(s, 3), "end": round(e, 3), "text": sents[k]["text"]}
+
+
 # --------------------------------------------------------------------------- entry point
 
 def select_segments(transcript: dict, scenes: list[float], total_dur: float, title_hint: str,
@@ -979,8 +1080,10 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
     brief_text = settings.get("brief", "")
     rules = brief.parse(brief_text)
     L = limits_for(mode, rules)
+    auto = not settings.get("max_clips")
     want = clip_count(total_dur, mode, settings.get("max_clips", 0))
-    min_clips = min(want, config.STREAM_MIN_CLIPS if mode == "stream" else config.MIN_CLIPS)
+    want = min(want, int(max(1, total_dur // max(L.src_min, 1.0))))   # cannot fit more without overlapping
+    min_clips = min(want, config.MIN_CLIPS)
     sents = build_sentences(transcript["words"])
     use_claude = config.ANALYSIS_MODE == "claude" or (config.ANALYSIS_MODE == "auto" and bool(config.ANTHROPIC_API_KEY))
     result = None
@@ -988,17 +1091,19 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
     usage = None
     claude_error = None
     top_up_to = min_clips
+    failed_ranges: list = []
     if use_claude:
         try:
             raw = claude_select(sents, scenes, total_dur, title_hint, progress, mode=mode, model=model, L=L,
-                                want=want, energy=energy, brief_text=brief_text, log=log, client=client)
+                                want=want, energy=energy, brief_text=brief_text, log=log, client=client, auto=auto)
             rules = brief.merge(rules, raw.get("brief_rules"))
             L = limits_for(mode, rules)
-            result = _snap_claude(sents, raw, L, want)
+            result = _snap_claude(sents, raw, L, want, auto=auto)
             usage = {**raw["_usage"], "model": model, "chunks": raw["_chunks"]}
             engine = "claude"
             if raw["_failed_chunks"]:
                 top_up_to = want
+                failed_ranges = raw["_failed_ranges"]
             if len(result["clips"]) < top_up_to:
                 log(f"Claude returned {len(result['clips'])} usable clips; topping up with offline analysis.")
         except Exception as e:  # network, quota, bad key... fall back, but tell the user
@@ -1015,9 +1120,9 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
             progress(0.3, "Scoring every possible clip window…")
         sub = (lambda f: progress(0.3 + 0.6 * f, "Scoring clip windows…")) if progress else None
         if mode == "stream":
-            off = offline_stream_select(sents, energy, total_dur, L, want, progress=sub)
+            off = offline_stream_select(sents, energy, total_dur, L, want, progress=sub, auto=auto)
         else:
-            off = offline_select(sents, scenes, total_dur, progress=sub, L=L, want=want)
+            off = offline_select(sents, scenes, total_dur, progress=sub, L=L, want=want, auto=auto)
         if result is None:
             result = off
         else:  # top up Claude's picks with non-overlapping offline picks
@@ -1025,6 +1130,11 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
                 if len(result["clips"]) >= top_up_to:
                     break
                 cc = {**c, "start": sents[c["start_sentence"]]["s"], "end": sents[c["end_sentence"]]["e"]}
+                # Only fill the parts Claude could not read (when a part failed), so weak offline picks
+                # never dilute Claude's choices elsewhere.
+                if failed_ranges and len(result["clips"]) >= min_clips and not any(
+                        a <= cc["start"] <= b for a, b in failed_ranges):
+                    continue
                 if not any(_overlap(cc, x) > 0 for x in result["clips"]):
                     result["clips"].append(cc)
             result["clips"].sort(key=lambda x: x["start_sentence"])
@@ -1033,6 +1143,8 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
         c["start"] = sents[c["start_sentence"]]["s"]
         c["end"] = sents[c["end_sentence"]]["e"]
         c["transcript"] = " ".join(s["text"] for s in sents[c["start_sentence"]:c["end_sentence"] + 1])
+        c.pop("_score", None)
+        attach_teaser(c, sents, L, bool(settings.get("teaser", mode == "stream")))
         if mode == "stream":
             c["peak_energy"] = round(peak_energy(energy, c["start"], c["end"]), 2)
     result["clips"] = [brief.apply(c, rules) for c in result["clips"]]
@@ -1049,5 +1161,6 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
     result["brief_rules"] = rules
     result["limits"] = L.__dict__
     result["target_clips"] = want
+    result["auto_count"] = auto
     result["sentence_count"] = len(sents)
     return result

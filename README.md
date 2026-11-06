@@ -2,8 +2,10 @@
 
 Turns a long video into finished vertical shorts for YouTube Shorts, TikTok and Instagram Reels. It has two modes:
 
-- **Documentary** – your own narrated explainers: 3–5 complete stories of 60–90 seconds.
-- **Stream / podcast** – streamer VODs, podcasts and influencer videos (for example Whop clipping campaigns): many 20–60 second moments, found from the speech *and* from loud reactions and laughter in the audio.
+- **Documentary** – your own narrated explainers: complete stories of 60–90 seconds.
+- **Stream / podcast** – streamer VODs, podcasts and influencer videos (for example Whop clipping campaigns): 20–60 second moments, found from the speech *and* from loud reactions and laughter in the audio.
+
+There's no fixed number of shorts. The app keeps **every moment it thinks will do well, up to 20**: a packed video can give 15 shorts, a weak one only 2.
 
 You upload the video, pick the mode and click **Generate Shorts**; the app does the rest.
 
@@ -28,7 +30,8 @@ Pick **Stream / podcast** above the Generate button. The options:
 |---|---|
 | **Layout** | *Whole picture* (over a blurred copy), *Full screen* (crops to where the action is) or *Facecam on top, gameplay below*. For the split layout, choose the webcam's corner and size and line the gold box up with the webcam on the preview. |
 | **Captions** | *Clean* (2–3 words, gold names) or *Pop* (1–2 big bold words, the spoken word in yellow). |
-| **Clips** | Automatic (about one clip per 8 minutes of stream, up to 30) or a fixed number. |
+| **Clips** | *Automatic* keeps every moment that clears the quality bar, up to 20. Or choose exactly 3–20. |
+| **Hook teaser** | Opens the clip with a 1–4 second flash of its payoff line (the wildest reaction or claim), then plays it from the start. On by default for streams, off for documentaries. Skipped when no line is short and punchy enough, or when it would break the campaign's length limit. |
 | **AI model** | Opus 5.5, Sonnet 5.5 or Haiku 5.5. Needs an API key; without one the free offline scorer is used. |
 | **Whop campaign brief** | Paste the campaign's rules. Clip lengths follow its limits, captions get the required hashtags, @mentions and phrases, and every finished clip gets a checklist (passes / needs a fix / check by eye). |
 
@@ -37,10 +40,33 @@ How stream clips are chosen:
 - **Loudness spikes.** The audio is measured every half second and compared with the minutes around it. Big jumps (shouting, laughing, hype) mark likely highlights.
 - **Speech.** Claude reads the whole transcript with those spikes marked. Multi-hour VODs are read in one-hour parts, so nothing is too long. Without a key, the offline scorer looks for hype language, laughter, questions, a clean start and a payoff near the end.
 - Stream clips keep natural speed (change `CH_STREAM_SPEED` if you like them faster) and skip scene detection, which would take very long on a multi-hour VOD.
+- **Tighter cuts for streams.** Leading "so / um / okay" is dropped so a clip opens on its first real word, "um"/"uh" fillers are cut, quiet pauses shrink to a quarter second, and a laugh or reaction that runs past the last word is kept (up to 3 s). Loud gaps are never cut, because they're usually the reaction.
 
 **Results log.** Under each finished clip, *Posted it? Log the results* lets you type in its views, earnings and link. Totals appear in the **Results log** panel. Once 3 or more clips of a kind are logged, Claude is shown your best and worst performers as examples the next time it picks moments, so its picks learn what works for your accounts.
 
 **Long VODs take time on a Chromebook.** Transcribing is the slow part: expect roughly the video's own length or more on a mid-range Chromebook with the `base` model (`tiny` is faster). Progress is saved, so a stopped job resumes.
+
+---
+
+## Posting
+
+Every finished short has a **Post it** row.
+
+- **Instagram (automatic).** Connect your Instagram once (the panel above your shorts), then click **Post to Instagram** on a short. You can edit the caption first. Or tick **Auto-post every short when it finishes** and choose how far apart posts go out (default 1 hour), so a run of 20 shorts doesn't land all at once. Posts wait in a queue that survives restarts. When a Reel is live, its link appears with a **Copy link for Whop** button and is filled into the results log.
+- **TikTok and YouTube Shorts (one click).** **Post on TikTok ↗** and **Post on YouTube Shorts ↗** download the MP4, copy the caption (or YouTube title and description) and open the upload page. Drop the file in and paste.
+
+> ⚠️ **Posting doesn't enter a clip in a Whop campaign.** After a clip is live, submit its link on the campaign's page in Whop, or it won't count toward payouts. The studio shows this reminder under your shorts. Check each campaign's rules on scheduled or automated posting too.
+
+### Connecting Instagram (once, about 10 minutes)
+
+Instagram only allows posting through its official API, which needs:
+
+1. An Instagram **Creator** or **Business** account (Instagram app → Settings → Account type), linked to a **Facebook Page**.
+2. A Meta developer app: at <https://developers.facebook.com> create an app of type **Business** and add the **Instagram** product with **Facebook Login for Business**. As the app's admin you can usually post to your own accounts without going through Meta's app review.
+3. An access token: open the **Graph API Explorer**, pick your app, add the permissions `instagram_basic`, `instagram_content_publish`, `pages_show_list` and `pages_read_engagement`, and click **Generate Access Token**.
+4. In the studio, click **Connect Instagram** and paste the token. The account is found automatically.
+
+Explorer tokens expire after about an hour. Under **Keep it connected for 60 days**, also paste the app's **App ID** and **App secret** (App settings → Basic) and the token is swapped for a 60-day one. When it expires, the studio asks you to reconnect. Instagram limits how many posts an account can publish per day. If the limit is hit, the queue waits an hour and tries again.
 
 ---
 
@@ -158,16 +184,18 @@ Transcription is the slowest step and only happens once per video; a resumed or 
 
 **Choosing the moments.** The whole documentary is analysed before anything is picked.
 
-- **Claude engine** (with a key): Claude reads the complete transcript plus pacing data. It ranks 6–10 candidate stories on storytelling, historical significance, curiosity, pacing and standalone value, then selects the best 3–5. It writes the titles, descriptions, hashtags and explanations using only facts the narration contains.
-- **Offline engine** (no key): every window of whole sentences between 28 and 104 seconds is scored on its opening hook, ending, dramatic events, dates and figures, names and pacing. Story boundaries are detected from pauses, scene cuts and shifts in vocabulary, so a short never glues two stories together or stops before the payoff. Intros, outros, sponsor reads and "subscribe" sections are avoided.
+- **Claude engine** (with a key): Claude reads the complete transcript plus pacing data and lists candidates from across the whole video, scoring each on hook, storytelling, significance, curiosity, payoff and standalone value. It judges the first sentence on its own, the way a stranger scrolling past would hear it, and starts a clip later when a stronger opening line comes a sentence or two in. Every clip must end within a sentence of its payoff. Each candidate gets an honest 0–100 score, and in automatic mode every candidate scoring 70 or more is kept (up to 20). Claude writes the titles, descriptions, hashtags and explanations using only facts the narration contains.
+- **Offline engine** (no key): every window of whole sentences between 28 and 104 seconds is scored on its opening hook (filler openings are penalised), ending, dramatic events, dates and figures, names and pacing. In automatic mode only windows close to the best one are kept. Story boundaries are detected from pauses, scene cuts and shifts in vocabulary, so a short never glues two stories together or stops before the payoff. Intros, outros, sponsor reads and "subscribe" sections are avoided.
 
 Every pick is checked against the real transcript: clips start and end on sentence boundaries and never overlap.
 
-**Cutting.** Silences over 0.7 s are shortened. Every word of narration is kept.
+**Cutting.** The clip starts tight on its first word (a leading "so", "and", "but" or "um" is dropped). Silences over 0.7 s shrink to about a third of a second, and long music-only gaps to 0.7 s. Every other word of narration is kept.
 
 **Speed.** Speed comes from the speaking rate: 1.15× for slow narration, down to 1.05× for fast narration. Pitch is preserved.
 
 **Vertical reframing.** The footage is never stretched. The animation sits over a blurred copy of itself. It's shown larger (cropped to 4:3 or 3:2) when the important detail is in the centre, and as the full frame otherwise.
+
+**Hook teaser** (optional, off by default for documentaries). A 1–4 second flash of the clip's most gripping line plays first, then the clip starts.
 
 **Captions.** Captions are word-synchronised, 2–3 words at a time. The spoken word pops slightly larger, and names, dates and numbers are gold. They sit below the picture, inside the area platform buttons don't cover.
 
@@ -211,6 +239,12 @@ Edit with `nano .env` in the project folder, then restart the app.
 | `CH_EXTRA_HASHTAGS` | empty | Hashtags added to every clip, e.g. `#mychannel #facts` |
 | `CH_CLAUDE_CHUNK_MINUTES` | `60` | Long videos are read by Claude in parts of this length |
 | `CH_STREAM_SPEED` | `1.0` | Playback speed of stream clips |
+| `CH_CLIP_CAP` | `20` | Most shorts one video can give in automatic mode |
+| `CH_QUALITY_BAR` | `70` | Claude's 0–100 score a moment needs to become a short in automatic mode |
+| `CH_TEASER_MAX_S` | `4` | Longest hook teaser, in seconds |
+| `CH_STREAM_PAUSE_KEEP` / `CH_DOC_PAUSE_KEEP` | `0.25` / `0.35` | How much of a pause is kept, in seconds |
+| `IG_ACCESS_TOKEN`, `IG_USER_ID` | empty | Instagram login, if you'd rather keep it here than connect in the studio |
+| `CH_GRAPH_VERSION` | empty | Pin a Meta Graph API version, e.g. `v24.0` (empty = your app's default) |
 | `CH_MAX_SOURCE_MINUTES` | `480` | Longest video accepted |
 | `CH_MAX_UPLOAD_GB` | `20` | Largest file accepted |
 
@@ -256,6 +290,7 @@ app/
   analyze.py     Claude + offline moment selection (documentary and stream modes)
   brief.py       Whop campaign brief rules and per-clip checks
   results.py     results log that feeds back into Claude's picks
+  instagram.py   Instagram Reels posting and the spaced posting queue
   render.py      cutting, speed, vertical layout, encoding, output checks
   captions.py    word-synchronised captions
   cli.py         batch mode

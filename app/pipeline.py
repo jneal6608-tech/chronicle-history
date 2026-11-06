@@ -284,7 +284,7 @@ def run_job(jid: str, only_clip: Optional[int] = None) -> None:
             log(jid, f"Rendering short {k}: {media.fmt_ts(c['start'])}-{media.fmt_ts(c['end'])}")
             try:
                 res = render.render_clip(src, info, tuple(visual["box"]), c, transcript["words"], cdir,
-                                         progress=cprog, settings=settings)
+                                         progress=cprog, settings=settings, energy=energy)
                 res.pop("words_out", None)
                 fname = f"{k:02d}_{_slug(c['title'])}.mp4"
                 (cdir / "short.mp4").replace(cdir / fname)
@@ -294,6 +294,7 @@ def run_job(jid: str, only_clip: Optional[int] = None) -> None:
                 (cdir / "post.txt").write_text(_post_text(meta), encoding="utf-8")
                 _set_clip(jid, k, status="done", file=fname, render=res, compliance=compliance)
                 log(jid, f"Short {k} done: {res['duration']:.1f}s at {res['speed']}x")
+                _auto_instagram(jid, k, c)
             except Exception as e:
                 traceback.print_exc()
                 _set_clip(jid, k, status="failed", error=str(e)[:2000])
@@ -320,6 +321,18 @@ def run_job(jid: str, only_clip: Optional[int] = None) -> None:
         traceback.print_exc()
         log(jid, f"ERROR: {type(e).__name__}: {e}")
         update(jid, status="failed", error=f"{type(e).__name__}: {e}", message="Processing stopped")
+
+
+def _auto_instagram(jid: str, k: int, c: dict) -> None:
+    """Queue a freshly rendered short for Instagram when auto-posting is on (never twice)."""
+    try:
+        from . import instagram
+        if instagram.auto_enabled() and (c.get("instagram") or {}).get("status") not in (
+                "published", "queued", "uploading", "processing", "publishing"):
+            instagram.enqueue(jid, k)
+            log(jid, f"Short {k} queued for Instagram")
+    except Exception as e:  # posting problems must never fail a render
+        log(jid, f"Couldn't queue short {k} for Instagram: {e}")
 
 
 def _set_clip(jid: str, index: int, **kw) -> None:
