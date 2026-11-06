@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from . import brief, config, results
+from . import brief, config, credits, results
 from .media import fmt_ts, peak_energy
 
 # Source-time limits for a segment (output is shorter after speed-up + pause removal).
@@ -956,6 +956,7 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
     result = None
     engine = "offline"
     usage = None
+    claude_error = None
     top_up_to = min_clips
     if use_claude:
         try:
@@ -971,7 +972,13 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
             if len(result["clips"]) < top_up_to:
                 log(f"Claude returned {len(result['clips'])} usable clips; topping up with offline analysis.")
         except Exception as e:  # network, quota, bad key... fall back, but tell the user
-            log(f"Claude analysis failed ({type(e).__name__}: {e}). Falling back to offline analysis.")
+            if credits.is_credit_error(e):
+                claude_error = "credits"
+                log("Your Claude credits have run out, so the free offline scorer picked these moments. "
+                    "Buy more credits to use Claude again.")
+            else:
+                claude_error = "other"
+                log(f"Claude analysis failed ({type(e).__name__}: {e}). Falling back to offline analysis.")
             result = None
     if result is None or len(result["clips"]) < top_up_to:
         if progress:
@@ -1004,6 +1011,7 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
     result["model"] = model if engine.startswith("claude") else (
         "offline-streamscore-v1" if mode == "stream" else "offline-storyscore-v1")
     result["usage"] = usage
+    result["claude_error"] = claude_error
     result["brief_rules"] = rules
     result["limits"] = L.__dict__
     result["target_clips"] = want

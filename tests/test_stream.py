@@ -174,6 +174,34 @@ def test_settings_are_validated():
     assert s["max_clips"] == 40 and s["model"] == config.CLAUDE_MODEL and s["captions"] == "pop"
 
 
+def test_credit_ledger_and_estimate():
+    from app import credits
+    with tempfile.TemporaryDirectory() as d:
+        old_dir, old_root, old_key = config.DATA_DIR, config.ROOT, config.ANTHROPIC_API_KEY
+        config.DATA_DIR, config.ROOT = Path(d), Path(d)
+        (Path(d) / ".env").write_text("CH_WHISPER_MODEL=base\nANTHROPIC_API_KEY=\n")
+        try:
+            assert credits.summary()["remaining"] is None
+            credits.set_balance(5)
+            credits.record_run("j1", "claude-sonnet-5-5", 0.06, 10, 3, "stream")
+            credits.record_run("j1", "claude-sonnet-5-5", 0.05, 10, 3, "stream")   # same job replaces
+            credits.add_credits(10)
+            s = credits.summary()
+            assert s["remaining"] == 14.95 and s["runs"] == 1 and abs(s["avg_per_clip"] - 0.05 / 3) < 1e-4
+            e = credits.estimate(240, "claude-opus-5-5", "stream", 30)
+            assert e["parts"] == 4 and 0 < e["low"] < e["high"] < 3
+            assert credits.estimate(10, "claude-haiku-5-5", "documentary", 4)["high"] < 0.05
+            credits.save_key("sk-ant-api03-" + "x" * 40)
+            env = (Path(d) / ".env").read_text()
+            assert env.count("ANTHROPIC_API_KEY=sk-ant-") == 1 and "CH_WHISPER_MODEL=base" in env
+            assert credits.summary()["connected"] and credits.key_hint() == "…xxxx"
+            assert credits.check_key("hello") is not None
+            credits.save_key(None)
+            assert not credits.summary()["connected"]
+        finally:
+            config.DATA_DIR, config.ROOT, config.ANTHROPIC_API_KEY = old_dir, old_root, old_key
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

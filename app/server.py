@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from . import config, media, pipeline, results
+from . import config, credits, media, pipeline, results
 
 app = FastAPI(title="Chronicle Shorts", docs_url=None, redoc_url=None)
 
@@ -64,7 +64,7 @@ def health():
     has_key = bool(config.ANTHROPIC_API_KEY)
     engine = ("Claude " + config.CLAUDE_MODEL) if (config.ANALYSIS_MODE != "offline" and has_key) else "Offline story scorer"
     checks.append({"name": "Story analysis", "ok": True, "warn": not has_key and config.ANALYSIS_MODE != "offline",
-                   "detail": engine + ("" if has_key else " (add ANTHROPIC_API_KEY to .env for Claude analysis)")})
+                   "detail": engine + ("" if has_key else " (connect Claude for smarter picks)")})
     free = shutil.disk_usage(config.DATA_DIR).free / 1e9
     checks.append({"name": "Disk space", "ok": free > 3, "detail": f"{free:.1f} GB free in {config.DATA_DIR}"})
     return {"ok": all(c["ok"] for c in checks), "checks": checks, "engine": engine,
@@ -211,6 +211,62 @@ def results_log():
     total_views = sum(r.get("views") or 0 for r in rows)
     total_earn = round(sum(r.get("earnings") or 0 for r in rows), 2)
     return {"rows": rows, "total_views": total_views, "total_earnings": total_earn}
+
+
+# ------------------------------------------------------------------ Claude connection + credits
+
+def _same_origin(request: Request) -> None:
+    """Changing the key or balance is only allowed from the studio page itself,
+    never from another website (CORS is open for the read-only endpoints)."""
+    origin = request.headers.get("origin")
+    if origin and origin.split("://", 1)[-1] != request.headers.get("host", ""):
+        raise HTTPException(403, "Open the studio itself to change this.")
+
+
+@app.get("/api/credits")
+def credits_summary():
+    return credits.summary()
+
+
+@app.get("/api/credits/estimate")
+def credits_estimate(minutes: float, model: str = "", mode: str = "documentary", clips: int = 0):
+    model = model if model in {m["id"] for m in config.CLAUDE_MODELS} else config.CLAUDE_MODEL
+    mode = mode if mode in config.MODES else "documentary"
+    from .analyze import clip_count
+    n = clip_count(minutes * 60, mode, max(0, clips))
+    return {**credits.estimate(max(0.1, minutes), model, mode, n), "clips": n}
+
+
+@app.post("/api/credits/key")
+async def credits_key(request: Request):
+    _same_origin(request)
+    body = await request.json()
+    key = str(body.get("key", "")).strip()
+    problem = credits.check_key(key)
+    if problem:
+        raise HTTPException(400, problem)
+    credits.save_key(key)
+    return credits.summary()
+
+
+@app.delete("/api/credits/key")
+def credits_key_remove(request: Request):
+    _same_origin(request)
+    credits.save_key(None)
+    return credits.summary()
+
+
+@app.post("/api/credits/balance")
+async def credits_balance(request: Request):
+    _same_origin(request)
+    body = await request.json()
+    try:
+        amount = float(str(body.get("amount", "")).replace("$", "").replace(",", "").strip())
+        if amount < 0 or amount > 100000:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "Enter a dollar amount, like 5 or 12.50.")
+    return credits.add_credits(amount) if body.get("action") == "add" else credits.set_balance(amount)
 
 
 @app.delete("/api/jobs/{job_id}")

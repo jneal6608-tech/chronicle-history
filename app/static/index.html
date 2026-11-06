@@ -172,6 +172,22 @@ details.brief[open] summary { margin-bottom: 8px; }
 .rlog-row .n { font-family: var(--mono); text-align: right; }
 .totals { display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; margin-top: 8px; }
 .totals b { font: 400 26px var(--display); display: block; color: var(--fg); }
+/* Claude credits card (stream mode) */
+.credits { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--raise); display: grid; gap: 10px; }
+.credits .top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.credits .left { font: 400 30px/1 var(--display); color: var(--fg); }
+.credits .left small { font: 600 10.5px var(--mono); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); display: block; margin-top: 6px; }
+.credits .est { font-size: 14px; }
+.credits .est b { font-family: var(--mono); font-weight: 600; }
+.credits .est.low { color: var(--warn); }
+.credits .meta { color: var(--muted); font-size: 12.5px; }
+.credits .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.credits .inline-form { display: flex; gap: 6px; flex-wrap: wrap; }
+.credits .inline-form input { width: 130px; }
+.credits .inline-form input.key { width: min(100%, 320px); }
+.credits ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; }
+.credits .err { color: var(--bad); font-size: 13px; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; color: inherit; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -245,6 +261,7 @@ details.brief[open] summary { margin-bottom: 8px; }
           <div class="row"><label for="model">AI model</label>
             <select id="model"></select>
             <small id="modelNote"></small></div>
+          <div class="credits" id="credits" hidden aria-live="polite"></div>
           <details class="brief" id="briefBox"><summary>Whop campaign brief (optional)</summary>
             <textarea id="brief" placeholder="Paste the campaign's requirements here, e.g. &#10;Clips must be 15–60 seconds. Tag @creator and use #creatorclips. No gambling segments."></textarea>
             <small>Clip lengths follow its limits, captions get the required tags and mentions, and every short gets a checklist before you submit.</small>
@@ -367,12 +384,15 @@ function saved() { try { return JSON.parse(localStorage.getItem(S_KEY) || "null"
 function remember() { try { localStorage.setItem(S_KEY, JSON.stringify({ ...currentSettings(), brief: "" })); } catch {} }
 
 function setupSettings(h) {
+  const keepModel = $("model").value;
   $("model").innerHTML = h.models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join("");
-  $("model").value = h.default_model;
+  $("model").value = keepModel && h.models.some(m => m.id === keepModel) ? keepModel : h.default_model;
   $("model").disabled = !h.has_key;
   $("modelNote").textContent = h.has_key
     ? "Billed to your Anthropic API credits. The cost of each run is shown when it finishes."
-    : "No API key yet, so the free offline scorer picks the moments. Add ANTHROPIC_API_KEY to .env to use Claude.";
+    : "Claude isn't connected, so the free offline scorer picks the moments.";
+  if (setupSettings.done) return;   // reconnecting: refresh the model list only
+  setupSettings.done = true;
   const s = saved();
   setMode(s && s.mode || "documentary", false);
   if (s) {
@@ -391,6 +411,7 @@ function setMode(m, applyDefaults = true) {
     ? "The studio transcribes the stream, listens for loud reactions and laughter, ranks every moment, then cuts, reframes and captions each clip."
     : "The studio transcribes the narration, reads the whole story, ranks every candidate moment, then cuts, reframes to 1080×1920, captions, paces and exports each short.";
   syncCam();
+  renderCredits(); wantEstimate();
 }
 document.querySelectorAll("#modeSeg button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 ["layout","camCorner","camSize"].forEach(id => $(id).addEventListener("change", syncCam));
@@ -411,6 +432,97 @@ function syncCam() {
   box.style.top = (c.startsWith("t") ? oy : oy + ph - hh) + "px";
   box.hidden = false;
 }
+// ---------- Claude credits (shown in stream mode)
+let CR = null, crOpen = "";   // crOpen: "", "connect", "add", "set"
+async function loadCredits() { try { CR = await api("/api/credits"); } catch { CR = null; } renderCredits(); }
+let estTimer = null, EST = null;
+function wantEstimate() {
+  clearTimeout(estTimer);
+  estTimer = setTimeout(async () => {
+    const v = $("srcVideo");
+    if (!CR || !CR.connected || !v.duration || mode !== "stream") { EST = null; renderCredits(); return; }
+    const q = new URLSearchParams({minutes: (v.duration / 60).toFixed(2), model: $("model").value, mode,
+                                   clips: $("maxClips").value});
+    try { EST = await api("/api/credits/estimate?" + q); } catch { EST = null; }
+    renderCredits();
+  }, 150);
+}
+function money(x, d = 2) { return "$" + Number(x).toFixed(d); }
+function renderCredits() {
+  const el = $("credits");
+  el.hidden = mode !== "stream" || !CR;
+  if (el.hidden) return;
+  const billing = `<a class="btn small" href="${esc(CR.billing_url)}" target="_blank" rel="noopener">`;
+  if (!CR.connected) {
+    el.innerHTML = crOpen === "connect" ? `
+      <div class="top"><strong>Connect Claude</strong><button class="btn small ghost" type="button" onclick="crOpen='';renderCredits()">Cancel</button></div>
+      <ol>
+        <li>Buy credits on Anthropic's site ($5 is the minimum). ${billing}Open Billing ↗</a></li>
+        <li>Create an API key and copy it. <a class="btn small" href="${esc(CR.keys_url)}" target="_blank" rel="noopener">Open API keys ↗</a></li>
+        <li>Paste the key here:
+          <form class="inline-form" onsubmit="connectKey(event)" style="margin-top:6px">
+            <input class="key" name="key" type="password" autocomplete="off" placeholder="sk-ant-…" aria-label="API key" required>
+            <button class="btn small" type="submit">Connect</button>
+          </form><div class="err" id="crErr"></div></li>
+      </ol>
+      <p class="meta">The key is saved only on this Chromebook, in the app's .env file.</p>`
+    : `
+      <div class="top"><div><strong>Free scorer in use</strong><div class="meta">Connect Claude for smarter picks and real hook titles, about 2–6¢ per clip.</div></div>
+      <button class="btn small" type="button" onclick="crOpen='connect';renderCredits()">Connect Claude</button></div>`;
+    return;
+  }
+  const left = CR.balance_known ? `<div class="left">${money(Math.max(0, CR.remaining))}<small>credits left · estimate</small></div>`
+                                : `<div class="left">–<small>balance not set yet</small></div>`;
+  let est = "";
+  if (EST) {
+    const short = EST.enough === false;
+    est = `<div class="est${short ? " low" : ""}">This video with ${esc(EST.model_label)}: about <b>${money(EST.low)}–${money(EST.high)}</b> for ${EST.clips} clips${EST.parts > 1 ? ` (read in ${EST.parts} parts)` : ""}.${short ? " That may be more than you have left; the free scorer takes over if credits run out." : ""}</div>`;
+  } else if (!$("srcVideo").duration) {
+    est = `<div class="meta">Pick a video to see what it will cost.</div>`;
+  }
+  const spent = CR.runs ? `<div class="meta">Spent ${money(CR.spent_total)} on ${CR.runs} video${CR.runs > 1 ? "s" : ""}${CR.avg_per_clip ? ` · about ${(CR.avg_per_clip * 100).toFixed(1)}¢ per clip` : ""}.</div>` : "";
+  let form = "";
+  if (crOpen === "add" || crOpen === "set" || !CR.balance_known) {
+    const setMode = crOpen === "set" || !CR.balance_known;
+    form = `<form class="inline-form" onsubmit="saveBalance(event, '${setMode ? "set" : "add"}')">
+      <input name="amount" inputmode="decimal" placeholder="${setMode ? "Balance, e.g. 5" : "Amount added, e.g. 5"}" aria-label="Dollar amount" required>
+      <button class="btn small" type="submit">${setMode ? "Set balance" : "Add"}</button>
+      ${CR.balance_known ? `<button class="btn small ghost" type="button" onclick="crOpen='';renderCredits()">Cancel</button>` : ""}
+    </form><div class="meta">${setMode ? "Type the balance shown on Anthropic's Billing page." : "Type how much you just bought."}</div><div class="err" id="crErr"></div>`;
+  }
+  el.innerHTML = `
+    <div class="top">${left}
+      <div class="actions">${billing}Buy more ↗</a>
+        ${CR.balance_known ? `<button class="btn small ghost" type="button" onclick="crOpen='add';renderCredits()">I added credits</button>
+        <button class="btn small ghost" type="button" onclick="crOpen='set';renderCredits()">Correct it</button>` : ""}</div></div>
+    ${est}${spent}${form}
+    <div class="meta">Counted from each run's cost (Anthropic doesn't share balances with apps); the Billing page has the exact amount. <span style="white-space:nowrap">Key ${esc(CR.key_hint)} · <a href="#" onclick="disconnectKey(event)">disconnect</a></span></div>`;
+}
+async function connectKey(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector("button"); btn.disabled = true; btn.textContent = "Checking…";
+  try {
+    CR = await api("/api/credits/key", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({key: new FormData(e.target).get("key")})});
+    crOpen = ""; toast("Claude connected");
+    H = null; await health(); renderCredits(); wantEstimate();
+  } catch (err) { btn.disabled = false; btn.textContent = "Connect"; $("crErr").textContent = err.message; }
+}
+async function saveBalance(e, action) {
+  e.preventDefault();
+  try {
+    CR = await api("/api/credits/balance", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({amount: new FormData(e.target).get("amount"), action})});
+    crOpen = ""; renderCredits(); wantEstimate();
+  } catch (err) { $("crErr").textContent = err.message; }
+}
+async function disconnectKey(e) {
+  e.preventDefault();
+  if (!confirm("Disconnect Claude? The key is removed from this Chromebook; your credits stay in your Anthropic account.")) return;
+  try { CR = await api("/api/credits/key", {method: "DELETE"}); H = null; await health(); renderCredits(); } catch (err) { toast(err.message); }
+}
+["model","maxClips"].forEach(id => $(id).addEventListener("change", wantEstimate));
+
 function currentSettings() {
   return { mode, model: $("model").value, layout: $("layout").value,
     facecam: { corner: $("camCorner").value, size: parseFloat($("camSize").value) },
@@ -437,7 +549,7 @@ function pick(f) {
   $("fDur").textContent = "reading…"; $("fRes").textContent = "reading…";
   v.onloadedmetadata = () => { $("fDur").textContent = fmt(v.duration); $("fRes").textContent = v.videoWidth + " × " + v.videoHeight;
     if (v.duration > 45 * 60 && mode === "documentary" && !saved()) setMode("stream");
-    syncCam(); };
+    syncCam(); wantEstimate(); };
   v.onerror = () => { $("fDur").textContent = "preview unavailable in this browser"; $("fRes").textContent = "–"; };
   drop.hidden = true; $("preview").hidden = false; $("facts").hidden = false; $("clear").hidden = false; $("settings").hidden = false;
   $("go").disabled = false;
@@ -509,8 +621,10 @@ function renderJob(st) {
   if (a) {
     const u = a.usage || {};
     const cost = (u.cost !== undefined && u.cost !== null) ? ` Claude cost for this video: about $${u.cost.toFixed(3)} (${(u.input_tokens||0).toLocaleString()} tokens in, ${(u.output_tokens||0).toLocaleString()} out${u.chunks > 1 ? ", read in " + u.chunks + " parts" : ""}).` : "";
-    const eng = a.engine === "offline"
-      ? "Moments were chosen by the free offline scorer. Add an Anthropic API key in .env to have Claude read the video and choose and title the moments."
+    const eng = a.claude_error === "credits"
+      ? "Your Claude credits ran out, so the free offline scorer picked these moments. Buy more credits on Anthropic's Billing page to use Claude again."
+      : a.engine === "offline"
+      ? "Moments were chosen by the free offline scorer. Connect Claude (Stream / podcast settings on the upload page) to have Claude choose and title the moments."
       : (a.engine === "claude+offline" ? "Claude chose most moments; the offline scorer filled the remaining slots." + cost : cost.trim());
     $("engineNote").hidden = !eng; $("engineNote").textContent = eng;
     $("candWrap").hidden = false;
@@ -636,6 +750,7 @@ async function doDelete(id) { try { await api(`/api/jobs/${id}`, {method:"DELETE
 // ---------- boot
 (async () => {
   await health();
+  loadCredits();
   library();
   resultsLog();
   const m = location.hash.match(/^#job-([a-f0-9]{12})$/);

@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import analyze, brief, config, media, render, transcribe
+from . import analyze, brief, config, credits, media, render, transcribe
 
 STAGES = ["upload", "transcribe", "analyze", "select", "render", "export"]
 STAGE_LABELS = {
@@ -255,6 +255,9 @@ def run_job(jid: str, only_clip: Optional[int] = None) -> None:
                 raise RuntimeError("No usable moments were found in the speech.")
             apath.write_text(json.dumps(analysis, indent=1), encoding="utf-8")
             u = analysis.get("usage") or {}
+            if u.get("cost") is not None:
+                credits.record_run(jid, u.get("model", ""), u["cost"], info.duration / 60,
+                                   len(analysis["clips"]), settings.get("mode", "documentary"))
             cost = f", Claude cost about ${u['cost']:.3f}" if u.get("cost") is not None else ""
             log(jid, f"Analysis engine: {analysis['engine']} - selected {len(analysis['clips'])} shorts "
                      f"from {len(analysis['candidates'])} ranked candidates{cost}")
