@@ -197,6 +197,23 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; color:
 .kit-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 14px; line-height: 1.45; }
 .kit-body .lbl { display: flex; justify-content: space-between; align-items: center; font: 600 10.5px var(--mono); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+select, input[type=password] { font: inherit; font-size: 14px; color: var(--fg); background: var(--raise);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.ig { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--raise); display: grid; gap: 10px; margin-bottom: 18px; }
+.ig .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ig .meta { color: var(--muted); font-size: 12.5px; }
+.ig form { display: grid; gap: 8px; max-width: 560px; }
+.ig ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.ig .err { color: var(--bad); font-size: 13px; }
+.ig label.chk { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.post-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.igst { font: 12px var(--mono); padding: 4px 9px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel); }
+.igst.ok { color: var(--ok); border-color: rgba(110,190,120,.45); }
+.igst.bad { color: var(--bad); }
+.igcap { width: 100%; min-height: 70px; }
+.whop { margin-top: 20px; border: 1px solid rgba(227,179,65,.55); background: rgba(227,179,65,.09); padding: 14px 16px;
+  border-radius: 10px; font-size: 14.5px; line-height: 1.5; }
+.whop strong { color: var(--brass); }
 </style>
 </head>
 <body>
@@ -264,8 +281,14 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; color:
               <option value="pop">Pop: 1–2 bold words, yellow on the spoken word</option>
             </select></div>
           <div class="row"><label for="maxClips">Clips</label>
-            <select id="maxClips"><option value="0">Automatic</option><option>3</option><option>5</option><option>8</option><option>10</option><option>15</option><option>20</option><option>30</option></select>
-            <small id="clipsNote">Documentaries: 3–5. Streams: about one per 8 minutes.</small></div>
+            <select id="maxClips"><option value="0">Automatic: every strong moment (up to 20)</option><option value="3">Exactly 3</option><option value="5">Exactly 5</option><option value="8">Exactly 8</option><option value="10">Exactly 10</option><option value="15">Exactly 15</option><option value="20">Exactly 20</option></select>
+            <small id="clipsNote">Automatic keeps only the moments likely to do well, so a strong video gives many shorts and a weak one only a few.</small></div>
+          <div class="row"><label for="teaser">Hook teaser</label>
+            <select id="teaser">
+              <option value="on">On: flash the payoff line for 1–4 s, then play the clip</option>
+              <option value="off">Off: start straight on the first line</option>
+            </select>
+            <small>Only used when a clip has a short, punchy line worth teasing. On by default for streams.</small></div>
           <div class="row"><label for="model">AI model</label>
             <select id="model"></select>
             <small id="modelNote"></small></div>
@@ -321,7 +344,12 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; color:
       <div><h2>Your shorts</h2><p class="sub" id="resSub">Ready to post on YouTube Shorts, TikTok and Instagram Reels.</p></div>
       <a class="btn primary" id="zip" href="#" download>Download all (ZIP)</a>
     </div>
+    <div class="ig" id="igBar" aria-live="polite"></div>
     <div class="shorts" id="shorts"></div>
+    <div class="whop" role="note">⚠️ <strong>Reminder: submit every clip through the campaign.</strong>
+      Posting to Instagram, TikTok or YouTube doesn't enter a clip in a Whop campaign. Once a clip is live, copy its link
+      and submit it on the campaign's page in Whop (Content Rewards), or it won't count toward payouts. Check the campaign's
+      rules on scheduled or automated posting before you turn on auto-posting.</div>
   </section>
 
   <section class="panel" id="rlogPanel" hidden>
@@ -405,6 +433,7 @@ function setupSettings(h) {
   setMode(s && s.mode || "documentary", false);
   if (s) {
     for (const [id, key] of [["layout","layout"],["capStyle","captions"],["maxClips","max_clips"]]) if (s[key] !== undefined) $(id).value = String(s[key]);
+    if (typeof s.teaser === "boolean") $("teaser").value = s.teaser ? "on" : "off";
     if (s.facecam) { $("camCorner").value = s.facecam.corner; $("camSize").value = String(s.facecam.size); }
     if (s.model && h.has_key && [...$("model").options].some(o => o.value === s.model)) $("model").value = s.model;
   }
@@ -413,8 +442,8 @@ function setupSettings(h) {
 function setMode(m, applyDefaults = true) {
   mode = m;
   document.querySelectorAll("#modeSeg button").forEach(b => b.setAttribute("aria-checked", String(b.dataset.mode === m)));
-  if (applyDefaults) { $("capStyle").value = m === "stream" ? "pop" : "clean"; $("maxClips").value = "0"; if (m === "documentary") $("layout").value = "fit"; }
-  $("heroTitle").textContent = m === "stream" ? "One VOD. A stack of clips." : "One upload. Three to five finished shorts.";
+  if (applyDefaults) { $("capStyle").value = m === "stream" ? "pop" : "clean"; $("maxClips").value = "0"; $("teaser").value = m === "stream" ? "on" : "off"; if (m === "documentary") $("layout").value = "fit"; }
+  $("heroTitle").textContent = m === "stream" ? "One VOD. A stack of clips." : "One upload. Every story worth posting.";
   $("heroSub").textContent = m === "stream"
     ? "The studio transcribes the stream, listens for loud reactions and laughter, ranks every moment, then cuts, reframes and captions each clip."
     : "The studio transcribes the narration, reads the whole story, ranks every candidate moment, then cuts, reframes to 1080×1920, captions, paces and exports each short.";
@@ -534,7 +563,8 @@ async function disconnectKey(e) {
 function currentSettings() {
   return { mode, model: $("model").value, layout: $("layout").value,
     facecam: { corner: $("camCorner").value, size: parseFloat($("camSize").value) },
-    captions: $("capStyle").value, max_clips: parseInt($("maxClips").value, 10) || 0, brief: $("brief").value };
+    captions: $("capStyle").value, max_clips: parseInt($("maxClips").value, 10) || 0, brief: $("brief").value,
+    teaser: $("teaser").value === "on" };
 }
 
 // ---------- file selection
@@ -603,7 +633,9 @@ async function poll() {
   try { st = await api(`/api/jobs/${jobId}`); $("offline").hidden = true; }
   catch (e) { if (/not found/i.test(e.message)) { $("newBtn").click(); return; } $("offline").hidden = false; pollTimer = setTimeout(poll, 3000); return; }
   renderJob(st);
+  const igBusy = (st.clips || []).some(c => c.instagram && IG_ACTIVE.includes(c.instagram.status));
   if (["running","queued"].includes(st.status)) pollTimer = setTimeout(poll, 1500);
+  else if (igBusy) pollTimer = setTimeout(() => { poll(); igLoad(); }, 5000);
   else library();
 }
 
@@ -655,7 +687,7 @@ function renderJob(st) {
     $("zip").hidden = done === 0;
     const host = $("shorts");
     clips.forEach(c => {
-      const key = c.index + ":" + c.status + ":" + (c.file || "") + ":" + (c.error || "") + ":" + JSON.stringify(c.results || null) + ":" + JSON.stringify(c.compliance || null);
+      const key = c.index + ":" + c.status + ":" + (c.file || "") + ":" + (c.error || "") + ":" + JSON.stringify(c.results || null) + ":" + JSON.stringify(c.compliance || null) + ":" + JSON.stringify(c.instagram || null) + ":" + (IG && IG.connected);
       if (renderedClips[c.index] === key) return;
       renderedClips[c.index] = key;
       let el = document.getElementById("short-" + c.index);
@@ -680,11 +712,125 @@ function shortCard(st, c) {
     <div class="field"><label>Ready to post</label>${postKit(c)}</div>
     <div class="field"><label>Why this moment</label><p>${esc(c.why_selected)}</p></div>
     ${campaign(c)}
-    ${c.status === "done" ? `<div class="specs"><span>${r.duration}s</span><span>${r.speed}× speed</span><span>${r.removed_seconds}s dead air cut</span><span>${layoutLabel(r)}</span>${c.peak_energy >= 2 ? `<span>loudness spike +${c.peak_energy}</span>` : ""}</div>
+    ${c.status === "done" ? `<div class="specs"><span>${r.duration}s</span><span>${r.speed}× speed</span><span>${r.removed_seconds}s dead air cut</span>${r.teaser ? `<span>${r.teaser_seconds}s hook teaser</span>` : ""}<span>${layoutLabel(r)}</span>${c.peak_energy >= 2 ? `<span>loudness spike +${c.peak_energy}</span>` : ""}</div>
     <div class="actions"><a class="btn small" href="${src}?download=1">Download MP4</a><button class="btn small ghost copy-title" data-copy="${esc(c.post_title || c.title)}">Copy title</button></div>
+    <div class="field"><label>Post it</label>${postRow(st, c, src)}</div>
     ${resultsBox(c)}` : ""}
   </div>`;
 }
+// ---------- posting: Instagram (automatic) + TikTok / YouTube (open the upload page)
+let IG = null, igOpen = false;
+const IG_ACTIVE = ["queued", "uploading", "processing", "publishing"];
+const IG_LABEL = {queued: "Queued for Instagram", uploading: "Uploading to Instagram…", processing: "Instagram is processing…",
+                  publishing: "Publishing…", published: "Posted on Instagram", failed: "Instagram post failed", cancelled: "Removed from queue"};
+async function igLoad() { try { IG = await api("/api/instagram"); } catch { IG = null; } igRender(); }
+function igRender() {
+  const el = $("igBar"); if (!el) return;
+  if (!IG) { el.hidden = true; return; }
+  el.hidden = false;
+  if (!IG.connected) {
+    el.innerHTML = igOpen ? `
+      <div class="top"><strong>Connect Instagram</strong><button class="btn small ghost" type="button" onclick="igOpen=false;igRender()">Cancel</button></div>
+      <ol>
+        <li>Make the Instagram account a <b>Creator</b> or <b>Business</b> account and link it to a Facebook Page.</li>
+        <li>At developers.facebook.com create an app (Business type) and add <b>Instagram</b> with Facebook Login for Business.</li>
+        <li>In the Graph API Explorer, generate a User token with <code>instagram_basic</code>, <code>instagram_content_publish</code>,
+          <code>pages_show_list</code> and <code>pages_read_engagement</code>. <a class="btn small" href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Open Graph API Explorer ↗</a></li>
+      </ol>
+      <form onsubmit="igConnect(event)">
+        <input type="password" name="token" autocomplete="off" placeholder="Access token" aria-label="Access token" required>
+        <input type="text" name="user_id" autocomplete="off" placeholder="Instagram account ID (optional, found automatically)" aria-label="Instagram account ID">
+        <details><summary class="meta">Keep it connected for 60 days (optional)</summary>
+          <div style="display:grid;gap:8px;margin-top:8px">
+            <input type="text" name="app_id" autocomplete="off" placeholder="App ID" aria-label="App ID">
+            <input type="password" name="app_secret" autocomplete="off" placeholder="App secret" aria-label="App secret">
+            <span class="meta">Explorer tokens expire after about an hour. With the app's ID and secret the token is swapped for a 60-day one.</span>
+          </div></details>
+        <div class="actions"><button class="btn small" type="submit">Connect</button></div>
+        <div class="err" id="igErr"></div>
+      </form>
+      <p class="meta">The token is stored only on this Chromebook.</p>`
+    : `<div class="top"><div><strong>Instagram auto-posting</strong><div class="meta">Post finished shorts straight to Instagram Reels, one at a time, spaced out.</div></div>
+       <button class="btn small" type="button" onclick="igOpen=true;igRender()">Connect Instagram</button></div>`;
+    return;
+  }
+  const gaps = IG.gaps.map(g => `<option value="${g}" ${g === IG.gap_minutes ? "selected" : ""}>${g ? (g >= 60 ? g / 60 + " h" : g + " min") : "no wait"}</option>`).join("");
+  const next = IG.queued ? ` · ${IG.queued} waiting${IG.next_post_at ? ", next about " + new Date(IG.next_post_at * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : ""}` : "";
+  el.innerHTML = `<div class="top"><div><strong>Instagram: @${esc(IG.username || "connected")}</strong><div class="meta">Shorts post as Reels${next}.</div></div>
+    <button class="btn small ghost" type="button" onclick="igDisconnect()">Disconnect</button></div>
+    <div class="actions">
+      <label class="chk"><input type="checkbox" ${IG.auto ? "checked" : ""} onchange="igOpts({auto: this.checked})"> Auto-post every short when it finishes</label>
+      <label class="chk">Space posts <select onchange="igOpts({gap_minutes: +this.value})" aria-label="Time between posts">${gaps}</select> apart</label>
+    </div>`;
+}
+async function igConnect(e) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  $("igErr").textContent = "Checking…";
+  try {
+    IG = await api("/api/instagram/connect", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({token: f.get("token"), user_id: f.get("user_id"), app_id: f.get("app_id"), app_secret: f.get("app_secret")})});
+    igOpen = false; igRender(); renderedClips = {}; poll(); toast("Instagram connected");
+  } catch (err) { $("igErr").textContent = err.message; }
+}
+async function igDisconnect() {
+  if (!confirm("Disconnect Instagram? The token is removed from this Chromebook. Queued posts wait until you reconnect.")) return;
+  try { IG = await api("/api/instagram/connect", {method: "DELETE"}); igRender(); renderedClips = {}; poll(); } catch (err) { toast(err.message); }
+}
+async function igOpts(o) {
+  try { IG = await api("/api/instagram/options", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(o)}); igRender(); }
+  catch (err) { toast(err.message); }
+}
+async function igPost(i) {
+  const box = document.getElementById("igcap-" + i);
+  try {
+    const st = await api(`/api/jobs/${jobId}/clips/${i}/instagram`, {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({caption: box ? box.value : null, now: true})});
+    toast("Posting to Instagram…"); renderJob(st); igLoad(); poll();
+  } catch (err) { toast(err.message); }
+}
+async function igCancel(i) {
+  try { const st = await api(`/api/jobs/${jobId}/clips/${i}/instagram`, {method: "DELETE"}); renderJob(st); igLoad(); }
+  catch (err) { toast(err.message); }
+}
+function postRow(st, c, src) {
+  const ig = c.instagram || {};
+  const k = kitOf(c);
+  let igPart;
+  if (ig.status === "published") {
+    igPart = `<span class="igst ok">✓ Posted on Instagram</span>${ig.permalink ? `<a class="btn small ghost" href="${esc(ig.permalink)}" target="_blank" rel="noopener">View ↗</a><button class="btn small" data-copy="${esc(ig.permalink)}">Copy link for Whop</button>` : ""}`;
+  } else if (IG_ACTIVE.includes(ig.status)) {
+    igPart = `<span class="igst">${IG_LABEL[ig.status]}</span>${ig.status === "queued" ? `<button class="btn small ghost" onclick="igCancel(${c.index})">Remove</button>` : ""}`
+      + (ig.error ? `<span class="meta">${esc(ig.error)}</span>` : "");
+  } else if (IG && IG.connected) {
+    igPart = `<details style="width:100%"><summary class="btn small" style="display:inline-block">Post to Instagram</summary>
+      <div style="display:grid;gap:8px;margin-top:8px"><textarea class="igcap" id="igcap-${c.index}" aria-label="Instagram caption">${esc(k.instagram)}</textarea>
+      <div class="actions"><button class="btn small" onclick="igPost(${c.index})">Post now</button><span class="meta">Edit the caption first if you like.</span></div></div></details>`
+      + (ig.status === "failed" ? `<span class="igst bad">${esc(ig.error || "Failed")}</span>` : "");
+  } else {
+    igPart = `<button class="btn small ghost" onclick="igOpen=true;igRender();$('igBar').scrollIntoView({behavior:'smooth'})">Connect Instagram to post</button>`;
+  }
+  return `<div class="post-row">${igPart}</div>
+    <div class="post-row">
+      <button class="btn small" onclick="openUpload(${c.index}, 'tiktok')">Post on TikTok ↗</button>
+      <button class="btn small" onclick="openUpload(${c.index}, 'youtube')">Post on YouTube Shorts ↗</button>
+    </div>
+    <span class="meta" style="font-size:12.5px;color:var(--muted)">Downloads the MP4, copies the caption and opens the upload page. Drop the file in and paste.</span>`;
+}
+const UPLOAD_URLS = {tiktok: "https://www.tiktok.com/tiktokstudio/upload", youtube: "https://www.youtube.com/upload"};
+async function openUpload(i, plat) {
+  const c = KITS[i]; if (!c) return;
+  const win = window.open(UPLOAD_URLS[plat], "_blank");   // open first so pop-up blockers allow it
+  if (win) win.opener = null;
+  const k = kitOf(c);
+  const text = plat === "youtube" ? k.youtube.title + "\n\n" + k.youtube.description : k.tiktok;
+  try { await navigator.clipboard.writeText(text); } catch {}
+  const a = document.createElement("a");
+  a.href = API + `/api/jobs/${jobId}/clips/${i}/video?download=1`; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+  toast(plat === "youtube" ? "MP4 downloading · title and description copied" : "MP4 downloading · caption copied");
+  if (!win) toast("Allow pop-ups to open the upload page");
+}
+
 // ---------- ready-to-post kit
 let PLAT = "tiktok";
 try { PLAT = localStorage.getItem("chronicle-plat") || "tiktok"; } catch {}
@@ -731,7 +877,7 @@ function resultsBox(c) {
     <form class="res-form" onsubmit="saveResults(event, ${c.index})">
       <input type="number" name="views" min="0" step="1" placeholder="Views" aria-label="Views" required value="${r ? r.views : ""}">
       <input type="text" name="earnings" inputmode="decimal" placeholder="Earnings $ (optional)" aria-label="Earnings" value="${r && r.earnings !== null ? r.earnings : ""}">
-      <input type="text" name="url" placeholder="Post link (optional)" aria-label="Post link" value="${r ? esc(r.url) : ""}">
+      <input type="text" name="url" placeholder="Post link (optional)" aria-label="Post link" value="${esc(r && r.url ? r.url : (c.instagram && c.instagram.permalink) || "")}">
       <div class="actions"><button class="btn small" type="submit">Save results</button></div>
     </form></details>`;
 }
@@ -787,6 +933,7 @@ async function doDelete(id) { try { await api(`/api/jobs/${id}`, {method:"DELETE
   loadCredits();
   library();
   resultsLog();
+  igLoad();
   const m = location.hash.match(/^#job-([a-f0-9]{12})$/);
   if (m) openJob(m[1]);
   setInterval(health, 30000);

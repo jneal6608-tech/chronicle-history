@@ -1,4 +1,13 @@
-"""Turns one selected segment into a finished 1080x1920 H.264/AAC short."""
+"""Turns one selected segment into a finished 1080x1920 H.264/AAC short.
+
+Cutting, in order:
+  1. Tight in/out points: the clip opens on its first real word (leading "so", "um", "okay" are
+     dropped) and, for streams, keeps the laughter/reaction that follows the last word.
+  2. Dead air is shortened (true silence everywhere; quiet word gaps too, but never a gap that
+     is loud, because in a stream that gap is usually the reaction itself).
+  3. Stream clips lose their "um"/"uh" fillers. Documentary narration is left word-for-word.
+  4. Optional teaser: a 1-4 s flash of the clip's payoff line plays first, then the clip.
+"""
 from __future__ import annotations
 
 import json
@@ -11,41 +20,88 @@ from typing import Callable, Optional
 from . import config, media
 from .captions import build_ass
 
+DOC_LEAD_IN = config.FILLERS | {"so", "and", "but", "okay", "ok", "anyway", "yeah"}
+
+
+def _core(word: str) -> str:
+    return re.sub(r"[^a-z']", "", word.lower())
+
+
+def _z_at(energy: dict | None, t: float) -> float:
+    if not energy or not energy.get("z"):
+        return 0.0
+    k = int(t / energy["hop"])
+    return float(energy["z"][k]) if 0 <= k < len(energy["z"]) else 0.0
+
 
 # ----------------------------------------------------------------- planning helpers
 
-def plan_window(seg: dict, words: list[dict], total: float) -> tuple[float, float]:
-    """Source in/out points with a little natural breathing room."""
-    start, end = seg["start"], seg["end"]
+def trim_lead_in(seg_start: float, seg_end: float, words: list[dict], stream: bool) -> float:
+    """Start time after dropping up to three leading filler words ("So, um, okay...")."""
+    inside = [w for w in words if w["s"] >= seg_start - 0.01 and w["e"] <= seg_end + 0.01]
+    lead = config.LEAD_IN_FILLERS if stream else DOC_LEAD_IN
+    k = 0
+    while k < min(3, len(inside) - 4) and _core(inside[k]["w"]) in lead:
+        k += 1
+    return inside[k]["s"] if k else seg_start
+
+
+def plan_window(seg: dict, words: list[dict], total: float, stream: bool = False,
+                energy: dict | None = None) -> tuple[float, float]:
+    """Source in/out points: tight on the first word, a little room after the last one.
+    Streams keep a loud reaction (laughter, shouting) that runs past the last word, up to 3 s."""
+    start = trim_lead_in(seg["start"], seg["end"], words, stream)
+    end = seg["end"]
     prev_end = max((w["e"] for w in words if w["e"] <= start + 0.01), default=0.0)
     next_start = min((w["s"] for w in words if w["s"] >= end - 0.01), default=total)
-    a = max(prev_end + 0.05, start - 0.20, 0.0)
-    b = min(next_start - 0.08, end + 0.55, total)
+    a = max(prev_end + 0.05, start - 0.12, 0.0)
+    tail = end + 0.45
+    if stream and energy:
+        t = end
+        while t < end + 3.0 and _z_at(energy, t) >= 1.5:
+            t += energy["hop"]
+        tail = max(tail, t + 0.3)
+    b = min(next_start - 0.08, tail, total)
     if b <= a:
         a, b = start, end
     return a, b
 
 
-def plan_cuts(words_rel: list[dict], silences: list[tuple[float, float]], length: float) -> list[tuple[float, float]]:
-    """Return the intervals to KEEP (relative seconds). Dead air is shortened, not removed entirely."""
+def plan_cuts(words_rel: list[dict], silences: list[tuple[float, float]], length: float, *,
+              pause_keep: float = 0.4, word_gap: float = 1.8, gap_keep: float = 1.0,
+              cut_fillers: bool = False, quiet: Callable[[float, float], bool] | None = None
+              ) -> list[tuple[float, float]]:
+    """Return the intervals to KEEP (relative seconds). Dead air is shortened, not removed entirely.
+
+    quiet(a, b) says whether a stretch has no loud reaction in it; loud gaps are never shortened."""
+    quiet = quiet or (lambda a, b: True)
     remove: list[tuple[float, float]] = []
 
     def no_speech(a: float, b: float) -> bool:
         return not any(w["s"] < b and w["e"] > a for w in words_rel)
 
-    # 1) True silence longer than 0.7s -> keep ~0.4s of it.
+    # 1) True silence longer than 0.7s -> keep `pause_keep` of it.
     for a, b in silences:
         if b - a >= 0.7:
-            ra, rb = a + 0.2, b - 0.2
+            ra, rb = a + pause_keep / 2, b - pause_keep / 2
             if rb - ra > 0.15 and no_speech(ra, rb):
                 remove.append((ra, rb))
-    # 2) Long narration gaps over music / ambience (> 1.8s) -> keep 1.0s.
+    # 2) Long gaps between words (music, ambience, game audio) -> keep `gap_keep`, unless it is loud.
     for w1, w2 in zip(words_rel, words_rel[1:]):
         gap = w2["s"] - w1["e"]
-        if gap > 1.8:
-            ra, rb = w1["e"] + 0.5, w2["s"] - 0.5
-            if no_speech(ra, rb):
+        if gap > word_gap:
+            ra, rb = w1["e"] + gap_keep / 2, w2["s"] - gap_keep / 2
+            if rb - ra > 0.1 and no_speech(ra, rb) and quiet(ra, rb):
                 remove.append((ra, rb))
+    # 3) Filler words ("um", "uh") between two real words.
+    if cut_fillers:
+        for k in range(1, len(words_rel) - 1):
+            w = words_rel[k]
+            if _core(w["w"]) in config.FILLERS and w["e"] - w["s"] >= 0.1:
+                ra = max(words_rel[k - 1]["e"] + 0.02, w["s"] - 0.03)
+                rb = min(words_rel[k + 1]["s"] - 0.02, w["e"] + 0.03)
+                if rb - ra > 0.08:
+                    remove.append((ra, rb))
     remove.sort()
     merged: list[list[float]] = []
     for a, b in remove:
@@ -78,6 +134,11 @@ def map_time(t: float, keep: list[tuple[float, float]]) -> float:
     return acc
 
 
+def is_kept(s: float, e: float, keep: list[tuple[float, float]]) -> bool:
+    """True if at least part of [s, e] survives the cuts (cut fillers drop out of the captions)."""
+    return any(min(e, b) - max(s, a) > 0.03 for a, b in keep)
+
+
 def choose_speed(words_rel: list[dict], kept_len: float, lo: float | None = None, hi: float | None = None,
                  target_max: float | None = None) -> tuple[float, str]:
     """1.05x for already-fast narration, up to 1.15x for slow, deliberate narration.
@@ -102,14 +163,43 @@ def choose_speed(words_rel: list[dict], kept_len: float, lo: float | None = None
     return sp, f"narration pace {wpm:.0f} wpm -> {sp:.2f}x"
 
 
+def _select_expr(keep: list[tuple[float, float]]) -> str:
+    return "+".join(f"between(t\\,{x:.3f}\\,{y:.3f})" for x, y in keep)
+
+
+def _source_graph(fps_s: str, keep: list[tuple[float, float]], length: float,
+                  teaser: tuple[float, float] | None) -> tuple[str, str]:
+    """FFmpeg graph prefixes that produce the cut video ([vsrc]) and audio ([asrc]) in output order.
+    With a teaser, the teaser interval is played first, then the cut clip."""
+    whole = len(keep) == 1 and keep[0][0] <= 0.01 and keep[0][1] >= length - 0.01
+    if not teaser:
+        if whole:
+            return f"[0:v]fps={fps_s}[vsrc]", "[0:a]anull[asrc]"
+        e = _select_expr(keep)
+        return (f"[0:v]fps={fps_s},select='{e}',setpts=N/FRAME_RATE/TB[vsrc]",
+                f"[0:a]aselect='{e}',asetpts=N/SR/TB[asrc]")
+    ta, tb = teaser
+    e = _select_expr(keep)
+    v = (f"[0:v]fps={fps_s},split=2[vt][vm];"
+         f"[vt]trim=start={ta:.3f}:end={tb:.3f},setpts=PTS-STARTPTS[vt2];"
+         f"[vm]select='{e}',setpts=N/FRAME_RATE/TB[vm2];"
+         f"[vt2][vm2]concat=n=2:v=1:a=0[vsrc]")
+    a = (f"[0:a]asplit=2[at][am];"
+         f"[at]atrim=start={ta:.3f}:end={tb:.3f},asetpts=PTS-STARTPTS,"
+         f"afade=t=out:st={max(0.0, tb - ta - 0.06):.3f}:d=0.06[at2];"
+         f"[am]aselect='{e}',asetpts=N/SR/TB,afade=t=in:d=0.04[am2];"
+         f"[at2][am2]concat=n=2:v=0:a=1[asrc]")
+    return v, a
+
+
 # ----------------------------------------------------------------- render
 
-def _layout(src: Path, info: media.VideoInfo, box, a: float, length: float, settings: dict, fps_s: str,
-            vsel: str, speed: float) -> dict:
+def _layout(src: Path, info: media.VideoInfo, box, a: float, length: float, settings: dict,
+            vsrc: str, speed: float) -> dict:
     """FFmpeg video graph + caption/title positions for the chosen vertical layout."""
     W, H = config.OUT_W, config.OUT_H
     layout = settings.get("layout", "fit")
-    head = f"[0:v]fps={fps_s},{vsel}setpts=PTS/{speed}"
+    head = f"{vsrc};[vsrc]setpts=PTS/{speed}"
     if layout == "fill":
         fr = media.choose_fill(src, a, length, box)
         graph = (f"{head},crop={fr['crop_w']}:{fr['crop_h']}:{fr['crop_x']}:{fr['crop_y']},"
@@ -158,39 +248,68 @@ def _layout(src: Path, info: media.VideoInfo, box, a: float, length: float, sett
 
 
 def render_clip(src: Path, info: media.VideoInfo, box, seg: dict, words: list[dict], out_dir: Path,
-                progress: Optional[Callable[[float], None]] = None, settings: dict | None = None) -> dict:
+                progress: Optional[Callable[[float], None]] = None, settings: dict | None = None,
+                energy: dict | None = None) -> dict:
     settings = settings or config.default_settings()
     stream = settings.get("mode") == "stream"
     out_dir.mkdir(parents=True, exist_ok=True)
-    a, b = plan_window(seg, words, info.duration)
+    a, b = plan_window(seg, words, info.duration, stream=stream, energy=energy)
     length = b - a
     words_rel = [{**w, "s": w["s"] - a, "e": w["e"] - a} for w in words if w["s"] >= a - 0.01 and w["e"] <= b + 0.01]
     if not words_rel:
         raise RuntimeError("No speech found inside this segment.")
     silences = media.detect_silences(src, a, length)
-    keep = plan_cuts(words_rel, silences, length)
+
+    def quiet(x: float, y: float) -> bool:   # no reaction in this stretch (relative times)
+        if not energy:
+            return True
+        t = a + x
+        while t < a + y:
+            if _z_at(energy, t) >= 1.5:
+                return False
+            t += energy["hop"]
+        return True
+
+    if stream:
+        keep = plan_cuts(words_rel, silences, length, pause_keep=config.STREAM_PAUSE_KEEP, word_gap=0.6,
+                         gap_keep=config.STREAM_PAUSE_KEEP, cut_fillers=True, quiet=quiet)
+    else:
+        keep = plan_cuts(words_rel, silences, length, pause_keep=config.DOC_PAUSE_KEEP, word_gap=1.4, gap_keep=0.7)
     kept_len = sum(y - x for x, y in keep)
+
+    # Teaser: the payoff line, flashed first. Relative to the window; must lie fully inside it.
+    teaser = None
+    t = seg.get("teaser")
+    if t and settings.get("teaser", stream):
+        ta, tb = t["start"] - a - 0.05, t["end"] - a + 0.12
+        if 0.5 < ta < tb <= length and tb - ta <= config.TEASER_MAX_S + 0.7:
+            teaser = (round(ta, 3), round(min(tb, length), 3))
+    teaser_len = (teaser[1] - teaser[0]) if teaser else 0.0
+
     if stream:
         speed, speed_reason = choose_speed(words_rel, kept_len, config.STREAM_SPEED, config.STREAM_SPEED)
     else:
-        speed, speed_reason = choose_speed(words_rel, kept_len)
-    out_len = kept_len / speed
+        speed, speed_reason = choose_speed(words_rel, kept_len + teaser_len)
+    out_len = (kept_len + teaser_len) / speed
 
     fps = min(60.0, info.fps)
     fps_s = f"{fps:.3f}".rstrip("0").rstrip(".")
-    if len(keep) > 1 or keep[0][0] > 0.01 or keep[0][1] < length - 0.01:
-        expr = "+".join(f"between(t\\,{x:.3f}\\,{y:.3f})" for x, y in keep)
-        vsel = f"select='{expr}',setpts=N/FRAME_RATE/TB,"
-        asel = f"aselect='{expr}',asetpts=N/SR/TB,"
-    else:
-        vsel = asel = ""
-    lay = _layout(src, info, box, a, length, settings, fps_s, vsel, speed)
+    vsrc, asrc = _source_graph(fps_s, keep, length, teaser)
+    lay = _layout(src, info, box, a, length, settings, vsrc, speed)
 
-    # Captions in output time.
+    # Captions in output time (teaser words first, then the clip; cut fillers are dropped).
     words_out = []
+    if teaser:
+        for w in words_rel:
+            if w["s"] >= teaser[0] - 0.01 and w["e"] <= teaser[1] + 0.01:
+                s = (w["s"] - teaser[0]) / speed
+                e = (w["e"] - teaser[0]) / speed
+                words_out.append({"w": w["w"], "s": round(max(0.0, s), 3), "e": round(max(e, s + 0.05), 3)})
     for w in words_rel:
-        s = map_time(w["s"], keep) / speed
-        e = map_time(w["e"], keep) / speed
+        if not is_kept(w["s"], w["e"], keep):
+            continue
+        s = (teaser_len + map_time(w["s"], keep)) / speed
+        e = (teaser_len + map_time(w["e"], keep)) / speed
         words_out.append({"w": w["w"], "s": round(s, 3), "e": round(max(e, s + 0.05), 3)})
     ass = build_ass(words_out, out_len, lay["cap_y"], seg.get("title", ""), lay["title_y"], lay["tag_y"],
                     seg.get("keywords", []), style=settings.get("captions", "clean"),
@@ -207,7 +326,7 @@ def render_clip(src: Path, info: media.VideoInfo, box, seg: dict, words: list[di
     fade_out = max(0.0, out_len - 0.25)
     graph = (
         f"{lay['graph']},ass=captions.ass:fontsdir=fonts,format=yuv420p[vout];"
-        f"[0:a]{asel}{tempo},afade=t=in:d=0.06,afade=t=out:st={fade_out:.3f}:d=0.25,"
+        f"{asrc};[asrc]{tempo},afade=t=in:d=0.04,afade=t=out:st={fade_out:.3f}:d=0.25,"
         f"loudnorm=I={config.TARGET_LUFS}:TP=-1.5:LRA=11,aresample=48000[aout]"
     )
     (out_dir / "filter.txt").write_text(graph, encoding="utf-8")
@@ -239,7 +358,9 @@ def render_clip(src: Path, info: media.VideoInfo, box, seg: dict, words: list[di
         raise RuntimeError("FFmpeg failed while rendering this short:\n" + tail[-1500:])
     tmp.replace(final)
     check = verify_output(final)
-    return {"source_in": a, "source_out": b, "kept_intervals": keep, "removed_seconds": round(length - kept_len, 2),
+    removed = round(length - kept_len, 2)
+    return {"source_in": a, "source_out": b, "kept_intervals": keep, "removed_seconds": removed,
+            "teaser": list(teaser) if teaser else None, "teaser_seconds": round(teaser_len / speed, 2),
             "speed": speed, "speed_reason": speed_reason, "duration": check["duration"],
             "framing": lay["framing"], "layout": settings.get("layout", "fit"),
             "captions": settings.get("captions", "clean"), "caption_words": len(words_out), "check": check,

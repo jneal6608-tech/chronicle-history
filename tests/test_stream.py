@@ -67,11 +67,12 @@ def test_limits_follow_brief():
     assert analyze.limits_for("documentary") == analyze.DOC_LIMITS
 
 
-def test_clip_count_by_mode():
-    assert analyze.clip_count(10 * 60, "documentary") == 4
-    assert analyze.clip_count(4 * 3600, "stream") == 30
-    assert analyze.clip_count(40 * 60, "stream") == 5
+def test_clip_count_is_a_cap_not_a_target():
+    # Automatic: up to CLIP_CAP (20) in both modes; quality decides the real number.
+    assert analyze.clip_count(10 * 60, "documentary") == config.CLIP_CAP == 20
+    assert analyze.clip_count(4 * 3600, "stream") == 20
     assert analyze.clip_count(40 * 60, "stream", 12) == 12
+    assert analyze.clip_count(40 * 60, "stream", 99) == 20
 
 
 def test_offline_stream_finds_the_loud_funny_moments():
@@ -81,14 +82,60 @@ def test_offline_stream_finds_the_loud_funny_moments():
     res = analyze.select_segments({"words": words}, [], total, "vod.mp4",
                                   settings=config.clean_settings({"mode": "stream", "brief": "Clips 15-45 seconds. #ad"}),
                                   energy=energy)
-    assert res["engine"] == "offline" and res["mode"] == "stream"
-    assert len(res["clips"]) == 5
+    assert res["engine"] == "offline" and res["mode"] == "stream" and res["auto_count"]
+    # ~15 funny moments in 40 minutes: automatic mode keeps the real highlights, and only those.
+    assert 8 <= len(res["clips"]) <= 20
     hits = sum(1 for c in res["clips"] if "insane" in c["transcript"])
-    assert hits >= 4, [c["transcript"][:80] for c in res["clips"]]
+    assert hits == len(res["clips"]), [c["transcript"][:80] for c in res["clips"]]
+    # Teasers (on by default for streams) only ever flash a line from later in the clip.
+    # Here every clip already opens on its loud line, so none needs one.
+    for c in res["clips"]:
+        if c.get("teaser"):
+            assert c["start"] < c["teaser"]["start"] < c["end"]
     for c in res["clips"]:
         assert c["end"] - c["start"] <= res["limits"]["src_max"] + 0.01
         assert "#ad" in c["hashtags"]
         assert "Chronicle" not in c["description"]
+
+
+def test_auto_mode_returns_few_clips_from_a_flat_video():
+    words = []
+    t = 0.0
+    for _ in range(140):  # 20 minutes of the same flat chatter: nothing stands out
+        ws = _words("So I was just looking at the map and thinking about where we should go next today.", t)
+        words += ws
+        t = ws[-1]["e"] + 0.6
+    total = words[-1]["e"]
+    energy = {"hop": 0.5, "db": [], "z": [0.0] * int(total / 0.5 + 2)}
+    res = analyze.select_segments({"words": words}, [], total, "flat.mp4",
+                                  settings=config.clean_settings({"mode": "stream"}), energy=energy)
+    assert 1 <= len(res["clips"]) <= 7
+
+
+def test_fixed_count_is_respected():
+    words = _stream_words(40)
+    total = words[-1]["e"]
+    res = analyze.select_segments({"words": words}, [], total, "vod.mp4",
+                                  settings=config.clean_settings({"mode": "stream", "max_clips": 5}),
+                                  energy=_energy_for(words, total))
+    assert len(res["clips"]) == 5 and not res["auto_count"]
+
+
+def test_teaser_is_dropped_when_it_does_not_fit():
+    sents = [{"s": 0, "e": 3, "text": "a"}, {"s": 3, "e": 6, "text": "b"}, {"s": 6, "e": 16, "text": "c"}]
+    L = analyze.Limits(5, 10, 20, 30)
+    c = {"start_sentence": 0, "end_sentence": 2, "start": 0, "end": 16, "teaser_sentence": 1}
+    analyze.attach_teaser(c, sents, L, True)
+    assert c["teaser"]["start"] == 3
+    c = {"start_sentence": 0, "end_sentence": 2, "start": 0, "end": 16, "teaser_sentence": 2}  # 10 s line: too long
+    analyze.attach_teaser(c, sents, L, True)
+    assert "teaser" not in c
+    c = {"start_sentence": 0, "end_sentence": 2, "start": 0, "end": 16, "teaser_sentence": 0}  # first line: pointless
+    analyze.attach_teaser(c, sents, L, True)
+    assert "teaser" not in c
+    c = {"start_sentence": 0, "end_sentence": 2, "start": 0, "end": 16, "teaser_sentence": 1}
+    analyze.attach_teaser(c, sents, L, False)
+    assert "teaser" not in c
 
 
 def _fake_client(calls):
@@ -171,7 +218,7 @@ def test_settings_are_validated():
     s = config.clean_settings({"mode": "stream", "layout": "nope", "facecam": {"corner": "xx", "size": 9},
                                "max_clips": "500", "model": "gpt"})
     assert s["layout"] == "fit" and s["facecam"] == {"corner": "bl", "size": 0.5}
-    assert s["max_clips"] == 40 and s["model"] == config.CLAUDE_MODEL and s["captions"] == "pop"
+    assert s["max_clips"] == 20 and s["model"] == config.CLAUDE_MODEL and s["captions"] == "pop"
 
 
 def test_credit_ledger_and_estimate():
