@@ -188,6 +188,14 @@ details.brief[open] summary { margin-bottom: 8px; }
 .credits ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; }
 .credits .err { color: var(--bad); font-size: 13px; }
 a.btn { text-decoration: none; display: inline-flex; align-items: center; color: inherit; }
+/* Ready-to-post kit */
+.kit { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.kit-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.kit-tabs button { flex: 1; border: 0; background: transparent; padding: 8px 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.kit-tabs button[aria-selected="true"] { color: var(--fg); box-shadow: inset 0 -2px 0 var(--brass); }
+.kit-body { padding: 10px 12px; display: grid; gap: 10px; }
+.kit-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 14px; line-height: 1.45; }
+.kit-body .lbl { display: flex; justify-content: space-between; align-items: center; font: 600 10.5px var(--mono); letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -669,15 +677,41 @@ function shortCard(st, c) {
     <span class="no">Short ${String(c.index).padStart(2,"0")} · source ${fmt(r.source_in ?? c.start)}–${fmt(r.source_out ?? c.end)}</span>
     <h3>${esc(c.title)}</h3>
     ${c.status === "failed" ? `<div class="err">${esc(c.error)}</div><div><button class="btn small" onclick="retry(${c.index})">Retry this short</button></div>` : ""}
-    <div class="field"><label>Caption / description <button class="copy" data-copy="${esc(c.description)}">Copy</button></label><p>${esc(c.description).replace(/\n/g,"<br>")}</p></div>
-    <div class="field"><label>Hashtags <button class="copy" data-copy="${esc(tags)}">Copy</button></label><p class="tags">${esc(tags)}</p></div>
+    <div class="field"><label>Ready to post</label>${postKit(c)}</div>
     <div class="field"><label>Why this moment</label><p>${esc(c.why_selected)}</p></div>
     ${campaign(c)}
     ${c.status === "done" ? `<div class="specs"><span>${r.duration}s</span><span>${r.speed}× speed</span><span>${r.removed_seconds}s dead air cut</span><span>${layoutLabel(r)}</span>${c.peak_energy >= 2 ? `<span>loudness spike +${c.peak_energy}</span>` : ""}</div>
-    <div class="actions"><a class="btn small" href="${src}?download=1">Download MP4</a><button class="btn small ghost copy-title" data-copy="${esc(c.title)}">Copy title</button></div>
+    <div class="actions"><a class="btn small" href="${src}?download=1">Download MP4</a><button class="btn small ghost copy-title" data-copy="${esc(c.post_title || c.title)}">Copy title</button></div>
     ${resultsBox(c)}` : ""}
   </div>`;
 }
+// ---------- ready-to-post kit
+let PLAT = "tiktok";
+try { PLAT = localStorage.getItem("chronicle-plat") || "tiktok"; } catch {}
+function kitOf(c) {
+  if (c.post_kit) return c.post_kit;
+  const tags = (c.hashtags || []).join(" ");   // older jobs: build a simple kit here
+  return { tiktok: `${c.description}\n\n${tags}`, instagram: `${c.description}\n\n${tags}`,
+           youtube: { title: (c.post_title || c.title) + " #shorts", description: `${c.description}\n\n${tags}`, tags: "" } };
+}
+function block(label, text) {
+  return `<div><div class="lbl">${label}<button class="copy" data-copy="${esc(text)}">Copy</button></div><pre>${esc(text)}</pre></div>`;
+}
+const KITS = {};
+function postKit(c) {
+  KITS[c.index] = c;
+  const k = kitOf(c), y = k.youtube;
+  const body = PLAT === "youtube"
+    ? block("Title", y.title) + block("Description", y.description) + (y.tags ? block("Tags", y.tags) : "")
+    : block("Caption", PLAT === "instagram" ? k.instagram : k.tiktok);
+  const tab = (id, name) => `<button type="button" role="tab" aria-selected="${PLAT === id}" onclick="setPlat('${id}')">${name}</button>`;
+  return `<div class="kit" data-i="${c.index}"><div class="kit-tabs" role="tablist">${tab("tiktok","TikTok")}${tab("youtube","YouTube")}${tab("instagram","Instagram")}</div><div class="kit-body">${body}</div></div>`;
+}
+function setPlat(p) {
+  PLAT = p; try { localStorage.setItem("chronicle-plat", p); } catch {}
+  document.querySelectorAll(".kit[data-i]").forEach(el => { el.outerHTML = postKit(KITS[el.dataset.i]); });
+}
+
 function layoutLabel(r) {
   if (r.layout === "split") return "facecam + gameplay";
   if (r.layout === "fill") return "full-screen crop";

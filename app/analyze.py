@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from . import brief, config, credits, results
+from . import brief, config, credits, post, results
 from .media import fmt_ts, peak_energy
 
 # Source-time limits for a segment (output is shorter after speed-up + pause removal).
@@ -581,9 +581,7 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
                          "summary": why, "parts": c["parts"]})
         if sel:
             seg = sents[c["i"]:c["j"] + 1]
-            desc = seg[0]["text"]
-            if len(desc) > 180:
-                desc = desc[:177].rsplit(" ", 1)[0] + "…"
+            desc = _stream_caption(seg, f, c, len(clips))
             names = [n for n, _ in sorted(name_phrases(seg).items(), key=lambda kv: -kv[1])[:3]]
             tags = ["#shorts", "#clips"] + config.EXTRA_HASHTAGS + ["#" + re.sub(r"[^A-Za-z0-9]", "", nm) for nm in names
                                             if len(re.sub(r"[^A-Za-z0-9]", "", nm)) > 2] + ["#streamerclips"]
@@ -592,6 +590,23 @@ def offline_stream_select(sents, energy, total_dur, L: Limits, want: int, progre
                           "keywords": names, "scores": c["parts"], "rank": rank + 1})
     clips.sort(key=lambda x: x["start_sentence"])
     return {"candidates": cand_out, "clips": clips}
+
+
+_CTA_LAUGH = ["I can't stop replaying this 😭", "the timing on this 😭", "how is this real 💀"]
+_CTA_Q = ["What would you have said?", "Who's right here?", "Be honest, would you do it?"]
+_CTA_HYPE = ["Thoughts? 👀", "This one went crazy", "Wait for it…"]
+
+
+def _stream_caption(seg, f, c, k: int) -> str:
+    """Free-scorer caption: the clip's strongest line in quotes, then a comment-driving line."""
+    i0 = c["i"]
+    best = max(range(len(seg)), key=lambda n: f[i0 + n]["hype"] + max(0, f[i0 + n]["z"]) * 0.4
+               - (2.0 if f[i0 + n]["nw"] < 4 else 0) - 0.03 * n)
+    line = seg[best]["text"].strip().strip("\"'")
+    if len(line) > 120:
+        line = line[:117].rsplit(" ", 1)[0] + "…"
+    pool = _CTA_LAUGH if c["laughs"] else _CTA_Q if c["q"] or any(s["text"].endswith("?") for s in seg) else _CTA_HYPE
+    return f'"{line}" {pool[k % len(pool)]}'
 
 
 def _stream_title(sents, i, j, f) -> str:
@@ -655,12 +670,14 @@ def _schema(mode: str) -> dict:
             "selected": {"type": "array", "items": {
                 "type": "object",
                 "properties": {"candidate_index": {"type": "integer"}, "title": {"type": "string"},
+                               "post_title": {"type": "string"},
                                "description": {"type": "string"},
+                               "search_tags": {"type": "array", "items": {"type": "string"}},
                                "hashtags": {"type": "array", "items": {"type": "string"}},
                                "why_selected": {"type": "string"},
                                "highlight_words": {"type": "array", "items": {"type": "string"}}},
-                "required": ["candidate_index", "title", "description", "hashtags", "why_selected",
-                             "highlight_words"],
+                "required": ["candidate_index", "title", "post_title", "description", "hashtags",
+                             "search_tags", "why_selected", "highlight_words"],
                 "additionalProperties": False}},
             "brief_rules": _brief_schema(),
         },
@@ -717,11 +734,18 @@ Process: read the whole transcript first. List {n_cands} candidates from across 
 assessment. Then select the best {want} (by candidate_index) - fewer only if the rest would be weak.
 Selected clips must not overlap and must not repeat the same moment.
 
-For each selected clip write:
+For each selected clip write everything needed to post it, in the voice of a top clip account:
 - title: max 60 characters. It is burned onto the video as the hook text, so make it punchy and
   curiosity-driven, no hashtags, no emoji, and nothing the clip does not deliver;
-- description: the post caption, 1-2 short sentences;
-- hashtags: 4-8 relevant hashtags including #shorts (plus any the brief requires);
+- post_title: the title shown in the feed and on YouTube, max 90 characters. Specific and curious
+  ("Streamer finds out chat was lying the whole time"), not generic ("Funny moment"). Name the creator
+  when the transcript or brief makes clear who it is - names are what people search. At most one emoji,
+  no hashtags, no ALL-CAPS sentences, nothing the clip does not deliver;
+- description: the post caption, 1-2 short sentences in a casual, native social-media voice that makes
+  people comment - end with a question or a bold take. 0-2 emoji. No hashtags here;
+- hashtags: 3-6 hashtags, most important first: the creator's name if known, the game/show/topic,
+  then broader ones, including #shorts (plus any the brief requires);
+- search_tags: 5-12 plain YouTube search tags without # (creator, game/show, topic, what happens);
 - why_selected: 1-2 sentences on why this clip will hold viewers;
 - highlight_words: 3-8 key words that appear verbatim in that clip's speech (names, numbers, punchline words).
 Accuracy: describe only what is actually said in the clip. Never invent claims about real people.
@@ -754,9 +778,13 @@ idea is), curiosity, pacing and standalone_value, with an overall
 0-100 and a one-sentence assessment. Then select the best {want} candidates (by candidate_index into your
 list) - choose fewer only if the extra ones would be weak.
 
-For each selected short write:
-- title: a scroll-stopping title, max 70 characters, no clickbait that the clip does not pay off;
-- description: 1-3 sentences for the post caption;
+For each selected short write everything needed to post it:
+- title: a scroll-stopping title, max 70 characters, no clickbait that the clip does not pay off.
+  It is burned onto the video;
+- post_title: the upload title, max 90 characters: specific and curiosity-driven, can differ from title;
+- description: the post caption, 1-3 sentences that tease the payoff and end with a question that
+  invites comments. 0-2 emoji, no hashtags here;
+- search_tags: 5-12 plain YouTube search tags without # (people, places, the topic, key terms);
 - hashtags: 5-9 hashtags including #shorts{(" " + " ".join(config.EXTRA_HASHTAGS)) if config.EXTRA_HASHTAGS else ""} and topic tags;
 - why_selected: 1-2 sentences explaining why this works as a standalone short;
 - highlight_words: 4-12 important words that appear verbatim in that segment's narration
@@ -916,6 +944,8 @@ def _snap_claude(sents, data, L: Limits = DOC_LIMITS, max_clips: int | None = No
                 tags.append(t)
         clips.append({"start_sentence": c["start_sentence"], "end_sentence": c["end_sentence"],
                       "start": c["start"], "end": c["end"], "title": sel["title"].strip()[:100],
+                      "post_title": (sel.get("post_title") or sel["title"]).strip()[:100],
+                      "search_tags": [t.strip().lstrip("#") for t in sel.get("search_tags", []) if t.strip()][:15],
                       "description": sel["description"].strip(), "hashtags": tags[:10],
                       "why_selected": sel["why_selected"].strip(), "keywords": hl,
                       "scores": c["parts"], "rank": None})
@@ -1006,6 +1036,10 @@ def select_segments(transcript: dict, scenes: list[float], total_dur: float, tit
         if mode == "stream":
             c["peak_energy"] = round(peak_energy(energy, c["start"], c["end"]), 2)
     result["clips"] = [brief.apply(c, rules) for c in result["clips"]]
+    for c in result["clips"]:
+        c.setdefault("post_title", c["title"])
+        c.setdefault("search_tags", [k for k in c.get("keywords", []) if k][:10])
+        c["post_kit"] = post.kit(c)
     result["engine"] = engine
     result["mode"] = mode
     result["model"] = model if engine.startswith("claude") else (

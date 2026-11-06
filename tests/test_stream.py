@@ -202,6 +202,31 @@ def test_credit_ledger_and_estimate():
             config.DATA_DIR, config.ROOT, config.ANTHROPIC_API_KEY = old_dir, old_root, old_key
 
 
+def test_post_kit_per_platform():
+    from app import post
+    c = {"title": "He didn't see it coming", "post_title": "xQc finds out chat was lying the whole time 😭",
+         "description": "Chat really kept this going for 3 hours. Who's worse, him or chat?",
+         "hashtags": ["#xqc", "#twitch", "#shorts"], "search_tags": ["xqc", "twitch funny", "chat lied"]}
+    k = post.kit(c)
+    assert k["youtube"]["title"].endswith("#shorts") and len(k["youtube"]["title"]) <= 100
+    assert k["youtube"]["description"].endswith("#xqc #twitch #shorts")
+    assert k["youtube"]["tags"] == "xqc, twitch funny, chat lied"
+    assert k["tiktok"].startswith("xQc finds out") and "#twitch" in k["tiktok"]
+    assert k["instagram"].startswith("Chat really") and "TIKTOK" in post.text_block(k)
+    long = post.kit({**c, "post_title": "x" * 99})
+    assert len(long["youtube"]["title"]) == 99
+
+
+def test_offline_stream_clips_are_ready_to_post():
+    words = _stream_words(30)
+    total = words[-1]["e"]
+    res = analyze.select_segments({"words": words}, [], total, "vod.mp4",
+                                  settings=config.clean_settings({"mode": "stream"}), energy=_energy_for(words, total))
+    for c in res["clips"]:
+        assert c["post_kit"]["tiktok"] and c["post_kit"]["youtube"]["title"]
+        assert c["description"].startswith('"') and len(c["title"]) <= 60
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

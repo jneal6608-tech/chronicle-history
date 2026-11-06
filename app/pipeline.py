@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import analyze, brief, config, credits, media, render, transcribe
+from . import analyze, brief, config, credits, media, post, render, transcribe
 
 STAGES = ["upload", "transcribe", "analyze", "select", "render", "export"]
 STAGE_LABELS = {
@@ -337,7 +337,9 @@ def _slug(s: str) -> str:
 
 
 def _clip_meta(c: dict, res: dict, source_name: str, compliance: dict | None = None) -> dict:
-    return {"title": c["title"], "description": c["description"], "hashtags": c["hashtags"],
+    return {"title": c["title"], "post_title": c.get("post_title", c["title"]),
+            "description": c["description"], "hashtags": c["hashtags"],
+            "search_tags": c.get("search_tags", []), "post_kit": c.get("post_kit") or post.kit(c),
             "campaign_check": compliance or {"ok": True, "checks": [], "manual": []},
             "why_selected": c["why_selected"], "source_file": source_name,
             "source_start": media.fmt_ts(res["source_in"]), "source_end": media.fmt_ts(res["source_out"]),
@@ -348,8 +350,8 @@ def _clip_meta(c: dict, res: dict, source_name: str, compliance: dict | None = N
 
 
 def _post_text(m: dict) -> str:
-    return (f"TITLE\n{m['title']}\n\nCAPTION / DESCRIPTION\n{m['description']}\n\n"
-            f"HASHTAGS\n{' '.join(m['hashtags'])}\n\n"
+    return (f"READY TO POST\n\n{post.text_block(m['post_kit'])}\n"
+            f"ON-SCREEN HOOK TEXT\n{m['title']}\n\n"
             f"SOURCE TIMESTAMPS\n{m['source_start']} - {m['source_end']} of {m['source_file']}\n\n"
             f"WHY THIS MOMENT\n{m['why_selected']}\n\n"
             f"DETAILS\nLength {m['duration_seconds']}s, speed {m['playback_speed']}x, "
