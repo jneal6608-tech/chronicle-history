@@ -164,3 +164,35 @@ def studio_urls() -> list[str]:
     if IS_CHROMEOS or HOST == "0.0.0.0":
         return [f"http://penguin.linux.test:{PORT}", f"http://localhost:{PORT}"]
     return [f"http://{HOST}:{PORT}"]
+
+
+# --- Lead finder ----------------------------------------------------------------
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+GITHUB_PREVIEW_REPO = os.environ.get("GITHUB_PREVIEW_REPO", "").strip()   # owner/repo with GitHub Pages on
+SITE_MODEL = _get("CH_SITE_MODEL", "claude-sonnet-5-5")
+
+
+def write_env(name: str, value: str | None) -> None:
+    """Set (or clear) one line in .env and apply it right away. The file stays readable only by you."""
+    env = ROOT / ".env"
+    lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
+    out, done = [], False
+    for ln in lines:
+        if re.match(rf"\s*{re.escape(name)}\s*=", ln):
+            if not done:
+                out.append(f"{name}={value or ''}")
+                done = True
+            continue
+        out.append(ln)
+    if not done:
+        out.append(f"{name}={value or ''}")
+    tmp = env.with_suffix(".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(env)
+    globals()[name] = value or ""
+    if value:
+        os.environ[name] = value
+    else:
+        os.environ.pop(name, None)

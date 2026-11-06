@@ -160,27 +160,7 @@ def check_key(key: str) -> str | None:
 
 def save_key(key: str | None) -> None:
     """Write (or remove) ANTHROPIC_API_KEY in .env and use it right away, no restart needed."""
-    env = config.ROOT / ".env"
-    lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
-    out, done = [], False
-    for ln in lines:
-        if re.match(r"\s*ANTHROPIC_API_KEY\s*=", ln):
-            if not done:
-                out.append(f"ANTHROPIC_API_KEY={key or ''}")
-                done = True
-            continue
-        out.append(ln)
-    if not done:
-        out.append(f"ANTHROPIC_API_KEY={key or ''}")
-    tmp = env.with_suffix(".tmp")
-    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(env)
-    config.ANTHROPIC_API_KEY = key or ""
-    if key:
-        os.environ["ANTHROPIC_API_KEY"] = key
-    else:
-        os.environ.pop("ANTHROPIC_API_KEY", None)
+    config.write_env("ANTHROPIC_API_KEY", key)
 
 
 def is_credit_error(e: Exception) -> bool:
